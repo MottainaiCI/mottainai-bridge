@@ -182,10 +182,10 @@
   version = "v0.3.3"
 
 [[projects]]
+  branch = "master"
   name = "github.com/docker/libnetwork"
   packages = ["ipamutils"]
-  revision = "6d23f11e681f24ee31802939e243fe8be41a75eb"
-  version = "v0.8.0-dev.2"
+  revision = "9ffeaf7d8b64fa0eb64cc27835dc1a5a90328024"
 
 [[projects]]
   name = "github.com/emirpasic/gods"
@@ -617,6 +617,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "d7d8392322f30d15ee9fcf6553ae5b45c18fdb47d9bf467c1b2ce43619afbadd"
+  inputs-digest = "22d21fae483e210b20bb57abd744cd2766b03bff9990332c807f387f52978464"
   solver-name = "gps-cdcl"
   solver-version = 1

@@ -45,6 +45,15 @@
   name = "github.com/spf13/viper"
   version = "1.0.2"
 
+[[override]]
+  branch = "master"
+  name = "github.com/docker/docker"
+
+[[override]]
+  branch = "master"
+  name = "github.com/docker/libnetwork"
+
+
 [prune]
   go-tests = true
   unused-packages = true
