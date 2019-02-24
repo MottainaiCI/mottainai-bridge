@@ -18,24 +18,27 @@ type MemoryInfo struct {
 	SupportedPageSizes []uint64
 }
 
-func Memory() (*MemoryInfo, error) {
+func Memory(opts ...*WithOption) (*MemoryInfo, error) {
+	mergeOpts := mergeOptions(opts...)
+	ctx := &context{
+		chroot: *mergeOpts.Chroot,
+	}
 	info := &MemoryInfo{}
-	err := memFillInfo(info)
-	if err != nil {
+	if err := ctx.memFillInfo(info); err != nil {
 		return nil, err
 	}
 	return info, nil
 }
 
 func (i *MemoryInfo) String() string {
-	tpbs := "unknown"
+	tpbs := UNKNOWN
 	if i.TotalPhysicalBytes > 0 {
 		tpb := i.TotalPhysicalBytes
 		unit, unitStr := unitWithString(tpb)
 		tpb = int64(math.Ceil(float64(i.TotalPhysicalBytes) / float64(unit)))
 		tpbs = fmt.Sprintf("%d%s", tpb, unitStr)
 	}
-	tubs := "unknown"
+	tubs := UNKNOWN
 	if i.TotalUsableBytes > 0 {
 		tub := i.TotalUsableBytes
 		unit, unitStr := unitWithString(tub)

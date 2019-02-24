@@ -40,6 +40,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mxk/go-flowrate/flowrate"
+
 	setting "github.com/MottainaiCI/mottainai-server/pkg/settings"
 	"github.com/MottainaiCI/mottainai-server/pkg/utils"
 
@@ -51,14 +53,15 @@ type HttpClient interface {
 
 	GetTask() ([]byte, error)
 	AbortTask()
-	DownloadArtefactsFromTask(string, string)
-	DownloadArtefactsFromNamespace(string, string)
-	DownloadArtefactsFromStorage(string, string)
+	DownloadArtefactsFromTask(string, string) error
+	DownloadArtefactsFromNamespace(string, string) error
+	DownloadArtefactsFromStorage(string, string) error
 	UploadFile(string, string) error
 	FailTask(string)
 	SetTaskField(string, string) ([]byte, error)
 	RegisterNode(string, string) ([]byte, error)
 	Doc(string)
+	SetUploadChunkSize(int)
 	SetupTask()
 	FinishTask()
 	ErrorTask()
@@ -68,45 +71,49 @@ type HttpClient interface {
 }
 
 type Fetcher struct {
-	BaseURL       string
-	docID         string
-	Token         string
+	ChunkSize int
+	BaseURL   string
+	docID     string
+	// TODO: this could be handled directly from Config
+	Token string
+	// TODO: this could be handled directly from Config
 	TrustedCert   string
 	Jar           *http.CookieJar
 	Agent         *anagent.Anagent
 	ActiveReports bool
+	Config        *setting.Config
 }
 
-func NewTokenClient(host, token string) *Fetcher {
-	f := NewBasicClient()
+func NewTokenClient(host, token string, config *setting.Config) *Fetcher {
+	f := NewBasicClient(config)
 	f.BaseURL = host
 	f.Token = token
 	return f
 }
 
-func NewClient(host string) *Fetcher {
-	f := NewBasicClient()
+func NewClient(host string, config *setting.Config) *Fetcher {
+	f := NewBasicClient(config)
 	f.BaseURL = host
 	return f
 }
 
-func NewFetcher(docID string) *Fetcher {
-	f := NewClient(setting.Configuration.AppURL)
+func NewFetcher(docID string, config *setting.Config) *Fetcher {
+	f := NewClient(config.GetWeb().AppURL, config)
 	f.docID = docID
 	return f
 }
 
-func NewBasicClient() *Fetcher {
+func NewBasicClient(config *setting.Config) *Fetcher {
 	// Basic constructor
-	f := &Fetcher{}
-	if len(setting.Configuration.TLSCert) > 0 {
-		f.TrustedCert = setting.Configuration.TLSCert
+	f := &Fetcher{Config: config, ChunkSize: 512}
+	if len(config.GetGeneral().TLSCert) > 0 {
+		f.TrustedCert = config.GetGeneral().TLSCert
 	}
 	return f
 }
 
-func New(docID string, a *anagent.Anagent) *Fetcher {
-	f := NewClient(setting.Configuration.AppURL)
+func New(docID string, a *anagent.Anagent, config *setting.Config) *Fetcher {
+	f := NewClient(config.GetWeb().AppURL, config)
 	f.docID = docID
 	f.Agent = a
 	return f
@@ -152,6 +159,10 @@ func (f *Fetcher) newHttpClient() *http.Client {
 	return c
 }
 
+func (f *Fetcher) SetUploadChunkSize(s int) {
+	f.ChunkSize = s
+}
+
 func (f *Fetcher) setAuthHeader(r *http.Request) *http.Request {
 	if len(f.Token) > 0 {
 		r.Header.Add("Authorization", "token "+f.Token)
@@ -189,20 +200,16 @@ func (f *Fetcher) GetJSONOptions(url string, option map[string]string, target in
 func (f *Fetcher) GetOptions(url string, option map[string]string) ([]byte, error) {
 	hclient := f.newHttpClient()
 	request, err := http.NewRequest("GET", f.BaseURL+url, nil)
-	f.setAuthHeader(request)
 	if err != nil {
 		return []byte{}, err
 	}
+	f.setAuthHeader(request)
 
 	q := request.URL.Query()
 	for k, v := range option {
 		q.Add(k, v)
 	}
 	request.URL.RawQuery = q.Encode()
-	if err != nil {
-		return []byte{}, err
-	}
-
 	response, err := hclient.Do(request)
 	if err != nil {
 		return []byte{}, err
@@ -353,6 +360,7 @@ func (f *Fetcher) UploadLargeFile(uri string, params map[string]string, paramNam
 
 	//part: parameters
 	mpWriter := multipart.NewWriter(byteBuf)
+
 	for key, value := range params {
 		err = mpWriter.WriteField(key, value)
 		if err != nil {
@@ -408,6 +416,18 @@ func (f *Fetcher) UploadLargeFile(uri string, params map[string]string, paramNam
 	if err != nil {
 		return err
 	}
+
+	// XXX: Yeah, this is just a fancier way of reading slowly from kernel buffers, i know.
+	if f.Config.GetAgent().UploadRateLimit != 0 {
+		f.AppendTaskOutput("Upload with bandwidth limit of: " + strconv.FormatInt(1024*f.Config.GetAgent().UploadRateLimit, 10))
+		reader := flowrate.NewReader(io.Reader(rd), 1024*f.Config.GetAgent().UploadRateLimit)
+		req, err = http.NewRequest("POST", f.BaseURL+uri, reader)
+		if err != nil {
+			return err
+		}
+
+	}
+
 	f.setAuthHeader(req)
 
 	req.TransferEncoding = []string{"chunked"}

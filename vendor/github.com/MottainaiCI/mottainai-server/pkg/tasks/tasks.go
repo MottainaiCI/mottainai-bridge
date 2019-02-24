@@ -24,11 +24,14 @@ package agenttasks
 
 import (
 	"encoding/json"
-	"fmt"
+
+	"github.com/ghodss/yaml"
+
 	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
+
 	"reflect"
 	"strconv"
 	"time"
@@ -40,11 +43,13 @@ import (
 )
 
 type Task struct {
-	ID           string   `json:"ID" form:"ID"` // ARMv7l overflows :(
+	ID string `json:"ID" form:"ID"` // ARMv7l overflows :(
+
+	Name         string   `json:"name" form:"name"`
 	Source       string   `json:"source" form:"source"`
 	Script       []string `json:"script" form:"script"`
 	Directory    string   `json:"directory" form:"directory"`
-	TaskName     string   `json:"task" form:"task"`
+	Type         string   `json:"type" form:"type"`
 	Status       string   `json:"status" form:"status"`
 	Output       string   `json:"output" form:"output"`
 	Result       string   `json:"result" form:"result"`
@@ -64,6 +69,7 @@ type Task struct {
 	Prune        string   `json:"prune" form:"prune"`
 	CacheImage   string   `json:"cache_image" form:"cache_image"`
 	CacheClean   string   `json:"cache_clean" form:"cache_clean"`
+	PublishMode  string   `json:"publish_mode" form:"publish_mode"`
 
 	TagNamespace string `json:"tag_namespace" form:"tag_namespace"`
 
@@ -71,6 +77,7 @@ type Task struct {
 	StartTime   string `json:"start_time" form:"start_time"`
 	EndTime     string `json:"end_time" form:"end_time"`
 	Queue       string `json:"queue" form:"queue"`
+	Retry       string `json:"retry" form:"retry"`
 
 	Delayed     string   `json:"eta" form:"eta"`
 	TimeOut     float64  `json:"timeout" form:"timeout"`
@@ -120,6 +127,16 @@ func (t *Task) ToMap() map[string]interface{} {
 	return ts
 }
 
+func (t *Task) Trials() int {
+
+	ret, err := strconv.Atoi(t.Retry)
+	if err != nil {
+		return 0
+	}
+
+	return ret
+}
+
 func FromFile(file string) (*Task, error) {
 	var t *Task
 	content, err := ioutil.ReadFile(file)
@@ -127,6 +144,63 @@ func FromFile(file string) (*Task, error) {
 		return t, err
 	}
 	if err := json.Unmarshal(content, &t); err != nil {
+		return t, err
+	}
+	return t, nil
+}
+func PlanFromYaml(file string) (*Plan, error) {
+	var t *Plan
+	content, err := ioutil.ReadFile(file)
+	if err != nil {
+		return t, err
+	}
+	if err := yaml.Unmarshal(content, &t); err != nil {
+		return t, err
+	}
+	return t, nil
+}
+func PlanFromJSON(file string) (*Plan, error) {
+	var t *Plan
+	content, err := ioutil.ReadFile(file)
+	if err != nil {
+		return t, err
+	}
+	if err := json.Unmarshal(content, &t); err != nil {
+		return t, err
+	}
+	return t, nil
+}
+func PipelineFromJSON(file string) (*Pipeline, error) {
+	var t *Pipeline
+	content, err := ioutil.ReadFile(file)
+	if err != nil {
+		return t, err
+	}
+	if err := json.Unmarshal(content, &t); err != nil {
+		return t, err
+	}
+	return t, nil
+}
+
+func FromYamlFile(file string) (*Task, error) {
+	var t *Task
+	content, err := ioutil.ReadFile(file)
+	if err != nil {
+		return t, err
+	}
+	if err := yaml.Unmarshal(content, &t); err != nil {
+		return t, err
+	}
+	return t, nil
+}
+
+func PipelineFromYaml(file string) (*Pipeline, error) {
+	var t *Pipeline
+	content, err := ioutil.ReadFile(file)
+	if err != nil {
+		return t, err
+	}
+	if err := yaml.Unmarshal(content, &t); err != nil {
 		return t, err
 	}
 	return t, nil
@@ -144,12 +218,26 @@ func (t *Task) Reset() {
 	t.StartTime = ""
 }
 
-func (t *Task) IsOwner(id int) bool {
+func (t *Task) IsOwner(id string) bool {
 
-	if strconv.Itoa(id) == t.Owner {
+	if id == t.Owner {
 		return true
 	}
 
+	return false
+}
+func (t *Task) Working() bool {
+
+	if t.IsSetup() || t.IsRunning() {
+		return true
+	}
+	return false
+}
+func (t *Task) IsSetup() bool {
+
+	if t.Status == setting.TASK_STATE_SETUP {
+		return true
+	}
 	return false
 }
 
@@ -168,19 +256,19 @@ func (t *Task) IsWaiting() bool {
 	return false
 }
 
-func (t *Task) ClearBuildLog() {
-	os.RemoveAll(path.Join(setting.Configuration.ArtefactPath, t.ID, "build_"+t.ID+".log"))
+func (t *Task) ClearBuildLog(artefactPath string) {
+	os.RemoveAll(path.Join(artefactPath, t.ID, "build_"+t.ID+".log"))
 }
 
-func (t *Task) Clear() {
-	os.RemoveAll(path.Join(setting.Configuration.ArtefactPath, t.ID))
-	os.RemoveAll(path.Join(setting.Configuration.LockPath, t.ID+".lock"))
+func (t *Task) Clear(artefactPath string, lockPath string) {
+	os.RemoveAll(path.Join(artefactPath, t.ID))
+	os.RemoveAll(path.Join(lockPath, t.ID+".lock"))
 }
 
-func (t *Task) GetLogPart(pos int) string {
+func (t *Task) GetLogPart(pos int, artefactPath string, lockPath string) string {
 	var b3 []byte
 	err := t.LockSection(func() error {
-		file, err := os.Open(path.Join(setting.Configuration.ArtefactPath, t.ID, "build_"+t.ID+".log"))
+		file, err := os.Open(path.Join(artefactPath, t.ID, "build_"+t.ID+".log"))
 		if err != nil {
 			return err
 		}
@@ -200,7 +288,7 @@ func (t *Task) GetLogPart(pos int) string {
 		}
 
 		return nil
-	})
+	}, lockPath)
 
 	if err != nil {
 		return ""
@@ -208,10 +296,10 @@ func (t *Task) GetLogPart(pos int) string {
 	return string(b3)
 }
 
-func (t *Task) TailLog(pos int) string {
+func (t *Task) TailLog(pos int, artefactPath string, lockPath string) string {
 	var b3 []byte
 	err := t.LockSection(func() error {
-		file, err := os.Open(path.Join(setting.Configuration.ArtefactPath, t.ID, "build_"+t.ID+".log"))
+		file, err := os.Open(path.Join(artefactPath, t.ID, "build_"+t.ID+".log"))
 		if err != nil {
 			return err
 		}
@@ -238,7 +326,7 @@ func (t *Task) TailLog(pos int) string {
 		}
 
 		return nil
-	})
+	}, lockPath)
 
 	if err != nil {
 		return ""
@@ -246,9 +334,9 @@ func (t *Task) TailLog(pos int) string {
 	return string(b3)
 }
 
-func (t *Task) LockSection(f func() error) error {
-	os.MkdirAll(setting.Configuration.LockPath, os.ModePerm)
-	lockfile := path.Join(setting.Configuration.LockPath, t.ID+".lock")
+func (t *Task) LockSection(f func() error, lockPath string) error {
+	os.MkdirAll(lockPath, os.ModePerm)
+	lockfile := path.Join(lockPath, t.ID+".lock")
 	fileLock := flock.NewFlock(lockfile)
 
 	locked, err := fileLock.TryLock()
@@ -264,12 +352,12 @@ func (t *Task) LockSection(f func() error) error {
 	return nil
 }
 
-func (t *Task) AppendBuildLog(s string) error {
+func (t *Task) AppendBuildLog(s string, artefactPath string, lockPath string) error {
 
-	os.MkdirAll(path.Join(setting.Configuration.ArtefactPath, t.ID), os.ModePerm)
+	os.MkdirAll(path.Join(artefactPath, t.ID), os.ModePerm)
 	return t.LockSection(func() error {
 
-		file, err := os.OpenFile(path.Join(setting.Configuration.ArtefactPath, t.ID, "build_"+t.ID+".log"), os.O_APPEND|os.O_WRONLY|os.O_CREATE, os.ModePerm)
+		file, err := os.OpenFile(path.Join(artefactPath, t.ID, "build_"+t.ID+".log"), os.O_APPEND|os.O_WRONLY|os.O_CREATE, os.ModePerm)
 		if err != nil {
 			return err
 		}
@@ -280,7 +368,7 @@ func (t *Task) AppendBuildLog(s string) error {
 			return err
 		}
 		return nil
-	})
+	}, lockPath)
 
 }
 
@@ -315,11 +403,18 @@ func (t *Task) IsSuccess() bool {
 	return false
 }
 
-func (t *Task) HandleStatus() {
-	fmt.Println("Handlestatus called")
+func (t *Task) IsPublishAppendMode() bool {
+	if t.PublishMode == setting.TASK_PUBLISH_MODE_APPEND {
+		return true
+	}
+
+	return false
+}
+
+func (t *Task) HandleStatus(namespacePath string, artefactPath string) {
 	if t.Status == setting.TASK_STATE_DONE {
 		if t.ExitStatus == "0" {
-			t.OnSuccess()
+			t.OnSuccess(namespacePath, artefactPath)
 		} else {
 			t.OnFailure()
 		}
@@ -335,24 +430,23 @@ func (t *Task) DecodeStatus(state string) string {
 	return setting.TASK_RESULT_FAILED
 }
 
-func (t *Task) Artefacts() []string {
-	return utils.TreeList(filepath.Join(setting.Configuration.ArtefactPath, t.ID))
+func (t *Task) Artefacts(artefactPath string) []string {
+	return utils.TreeList(filepath.Join(artefactPath, t.ID))
 }
 
 func (t *Task) Done() {
-	fmt.Println("Build done")
 }
 
 func (t *Task) OnFailure() {
-	fmt.Println("Build failed")
-
 }
 
-func (t *Task) OnSuccess() {
-	fmt.Println("Build succeeded")
-
+func (t *Task) OnSuccess(namespacePath string, artefactPath string) {
 	if len(t.TagNamespace) > 0 {
 		ns := namespace.NewFromMap(map[string]interface{}{"name": t.TagNamespace, "path": t.TagNamespace})
-		ns.Tag(t.ID)
+		if t.IsPublishAppendMode() {
+			ns.Append(t.ID, namespacePath, artefactPath)
+		} else {
+			ns.Tag(t.ID, namespacePath, artefactPath)
+		}
 	}
 }

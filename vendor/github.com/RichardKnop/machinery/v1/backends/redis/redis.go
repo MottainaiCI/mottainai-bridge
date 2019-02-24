@@ -136,6 +136,14 @@ func (b *Backend) TriggerChord(groupUUID string) (bool, error) {
 	return true, nil
 }
 
+func (b *Backend) mergeNewTaskState(newState *tasks.TaskState) {
+	state, err := b.GetState(newState.TaskUUID)
+	if err == nil {
+		newState.CreatedAt = state.CreatedAt
+		newState.TaskName = state.TaskName
+	}
+}
+
 // SetStatePending updates task state to PENDING
 func (b *Backend) SetStatePending(signature *tasks.Signature) error {
 	taskState := tasks.NewPendingTaskState(signature)
@@ -145,30 +153,35 @@ func (b *Backend) SetStatePending(signature *tasks.Signature) error {
 // SetStateReceived updates task state to RECEIVED
 func (b *Backend) SetStateReceived(signature *tasks.Signature) error {
 	taskState := tasks.NewReceivedTaskState(signature)
+	b.mergeNewTaskState(taskState)
 	return b.updateState(taskState)
 }
 
 // SetStateStarted updates task state to STARTED
 func (b *Backend) SetStateStarted(signature *tasks.Signature) error {
 	taskState := tasks.NewStartedTaskState(signature)
+	b.mergeNewTaskState(taskState)
 	return b.updateState(taskState)
 }
 
 // SetStateRetry updates task state to RETRY
 func (b *Backend) SetStateRetry(signature *tasks.Signature) error {
-	state := tasks.NewRetryTaskState(signature)
-	return b.updateState(state)
+	taskState := tasks.NewRetryTaskState(signature)
+	b.mergeNewTaskState(taskState)
+	return b.updateState(taskState)
 }
 
 // SetStateSuccess updates task state to SUCCESS
 func (b *Backend) SetStateSuccess(signature *tasks.Signature, results []*tasks.TaskResult) error {
 	taskState := tasks.NewSuccessTaskState(signature, results)
+	b.mergeNewTaskState(taskState)
 	return b.updateState(taskState)
 }
 
 // SetStateFailure updates task state to FAILURE
 func (b *Backend) SetStateFailure(signature *tasks.Signature, err string) error {
 	taskState := tasks.NewFailureTaskState(signature, err)
+	b.mergeNewTaskState(taskState)
 	return b.updateState(taskState)
 }
 
@@ -181,7 +194,6 @@ func (b *Backend) GetState(taskUUID string) (*tasks.TaskState, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	state := new(tasks.TaskState)
 	decoder := json.NewDecoder(bytes.NewReader(item))
 	decoder.UseNumber()
@@ -299,7 +311,7 @@ func (b *Backend) setExpirationTime(key string) error {
 	expiresIn := b.GetConfig().ResultsExpireIn
 	if expiresIn == 0 {
 		// // expire results after 1 hour by default
-		expiresIn = 3600
+		expiresIn = config.DefaultResultsExpireIn
 	}
 	expirationTimestamp := int32(time.Now().Unix() + int64(expiresIn))
 
@@ -317,7 +329,7 @@ func (b *Backend) setExpirationTime(key string) error {
 // open returns or creates instance of Redis connection
 func (b *Backend) open() redis.Conn {
 	if b.pool == nil {
-		b.pool = b.NewPool(b.socketPath, b.host, b.password, b.db, b.GetConfig().Redis)
+		b.pool = b.NewPool(b.socketPath, b.host, b.password, b.db, b.GetConfig().Redis, b.GetConfig().TLSConfig)
 	}
 	if b.redsync == nil {
 		var pools = []redsync.Pool{b.pool}

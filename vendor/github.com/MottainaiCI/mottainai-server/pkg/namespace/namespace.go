@@ -27,12 +27,11 @@ import (
 	"os"
 	"path/filepath"
 
-	setting "github.com/MottainaiCI/mottainai-server/pkg/settings"
 	"github.com/MottainaiCI/mottainai-server/pkg/utils"
 )
 
 type Namespace struct {
-	ID         int    `json:"ID"`
+	ID         string `json:"ID"`
 	Name       string `form:"name" json:"name"`
 	Path       string `json:"path" form:"path"`
 	Visibility string `json:"visbility" form:"visbility"`
@@ -106,6 +105,7 @@ func NewFromMap(t map[string]interface{}) Namespace {
 		name       string
 		path       string
 		visibility string
+		id         string
 		owner      string
 	)
 	if str, ok := t["owner_id"].(string); ok {
@@ -120,18 +120,21 @@ func NewFromMap(t map[string]interface{}) Namespace {
 	if str, ok := t["visibility"].(string); ok {
 		visibility = str
 	}
-
+	if str, ok := t["id"].(string); ok {
+		id = str
+	}
 	Namespace := Namespace{
 		Name:       name,
 		Path:       path,
 		Visibility: visibility,
 		Owner:      owner,
+		ID:         id,
 	}
 	return Namespace
 }
-func (n *Namespace) Exists() bool {
+func (n *Namespace) Exists(namespacePath string) bool {
 
-	fi, err := os.Stat(filepath.Join(setting.Configuration.NamespacePath, n.Name))
+	fi, err := os.Stat(filepath.Join(namespacePath, n.Name))
 	if err != nil {
 		panic(err)
 	}
@@ -141,25 +144,37 @@ func (n *Namespace) Exists() bool {
 	return false
 }
 
-func (n *Namespace) Wipe() {
-	os.RemoveAll(filepath.Join(setting.Configuration.NamespacePath, n.Name))
-	os.MkdirAll(filepath.Join(setting.Configuration.NamespacePath, n.Name), os.ModePerm)
+func (n *Namespace) Wipe(namespacePath string) {
+	os.RemoveAll(filepath.Join(namespacePath, n.Name))
+	os.MkdirAll(filepath.Join(namespacePath, n.Name), os.ModePerm)
 }
 
-func (n *Namespace) Tag(from string) error {
+func (n *Namespace) Tag(
+	from string,
+	namespacePath string,
+	artefactPath string) error {
 
-	n.Wipe()
+	n.Wipe(namespacePath)
 
-	taskArtefact := filepath.Join(setting.Configuration.ArtefactPath, from)
-	namespace := filepath.Join(setting.Configuration.NamespacePath, n.Name)
+	taskArtefact := filepath.Join(artefactPath, from)
+	namespace := filepath.Join(namespacePath, n.Name)
 	return utils.DeepCopy(taskArtefact, namespace)
 }
 
-func (n *Namespace) Clone(old Namespace) error {
+func (n *Namespace) Append(from string,
+	namespacePath string,
+	artefactPath string) error {
 
-	n.Wipe()
+	taskArtefact := filepath.Join(artefactPath, from)
+	namespace := filepath.Join(namespacePath, n.Name)
+	return utils.DeepCopy(taskArtefact, namespace)
+}
 
-	oldNamespace := filepath.Join(setting.Configuration.NamespacePath, old.Path)
-	newNamespace := filepath.Join(setting.Configuration.NamespacePath, n.Name)
+func (n *Namespace) Clone(old Namespace, namespacePath string) error {
+
+	n.Wipe(namespacePath)
+
+	oldNamespace := filepath.Join(namespacePath, old.Path)
+	newNamespace := filepath.Join(namespacePath, n.Name)
 	return utils.DeepCopy(oldNamespace, newNamespace)
 }

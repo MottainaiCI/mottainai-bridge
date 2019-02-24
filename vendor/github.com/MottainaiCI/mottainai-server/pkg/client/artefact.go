@@ -23,6 +23,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 package client
 
 import (
+	"github.com/mxk/go-flowrate/flowrate"
+
 	"errors"
 	"fmt"
 	"io"
@@ -37,7 +39,9 @@ import (
 
 func (d *Fetcher) NamespaceFileList(namespace string) ([]string, error) {
 	var fileList []string
-	err := d.GetJSONOptions("/api/namespace/"+namespace+"/list", map[string]string{}, &fileList)
+	url := d.Config.GetWeb().BuildURI(
+		fmt.Sprintf("/api/namespace/%s/list", namespace))
+	err := d.GetJSONOptions(url, map[string]string{}, &fileList)
 	if err != nil {
 		return []string{}, err
 	}
@@ -47,7 +51,9 @@ func (d *Fetcher) NamespaceFileList(namespace string) ([]string, error) {
 
 func (d *Fetcher) StorageFileList(storage string) ([]string, error) {
 	var fileList []string
-	err := d.GetJSONOptions("/api/storage/"+storage+"/list", map[string]string{}, &fileList)
+	url := d.Config.GetWeb().BuildURI(
+		fmt.Sprintf("/api/storage/%s/list", storage))
+	err := d.GetJSONOptions(url, map[string]string{}, &fileList)
 	if err != nil {
 		return []string{}, err
 	}
@@ -57,7 +63,9 @@ func (d *Fetcher) StorageFileList(storage string) ([]string, error) {
 
 func (d *Fetcher) TaskFileList(task string) ([]string, error) {
 	var fileList []string
-	err := d.GetJSONOptions("/api/tasks/"+task+"/artefacts", map[string]string{}, &fileList)
+	url := d.Config.GetWeb().BuildURI(
+		fmt.Sprintf("/api/tasks/%s/artefacts", task))
+	err := d.GetJSONOptions(url, map[string]string{}, &fileList)
 	if err != nil {
 		return []string{}, err
 	}
@@ -65,43 +73,11 @@ func (d *Fetcher) TaskFileList(task string) ([]string, error) {
 	return fileList, nil
 }
 
-func (d *Fetcher) DownloadArtefactsFromTask(taskid, target string) {
-	list, err := d.TaskFileList(taskid)
-	if err != nil {
-		d.AppendTaskOutput("[Download] Failed getting task artefacts list")
-		return
-	}
-	os.MkdirAll(target, os.ModePerm)
-	d.AppendTaskOutput("Downloading artefacts from " + taskid)
-	for _, file := range list {
-		trials := 5
-		done := true
-
-		reldir, _ := filepath.Split(file)
-		for done {
-
-			if trials < 0 {
-				done = false
-			}
-			os.MkdirAll(filepath.Join(target, reldir), os.ModePerm)
-			d.AppendTaskOutput("Downloading  " + d.BaseURL + "/artefact/" + taskid + file + " to " + filepath.Join(target, file))
-			if ok, err := d.Download(d.BaseURL+"/artefact/"+taskid+file, filepath.Join(target, file)); !ok {
-				d.AppendTaskOutput("Downloading failed : " + err.Error())
-				trials--
-			} else {
-				done = false
-				d.AppendTaskOutput("Downloading succeeded ")
-
-			}
-
-		}
-
-	}
-
+func (d *Fetcher) DownloadArtefactsFromTask(taskid, target string) error {
+	return d.DownloadArtefactsGeneric(taskid, target, "artefact")
 }
 
 func (fetcher *Fetcher) UploadFile(path, art string) error {
-
 	_, file := filepath.Split(path)
 	rel := strings.Replace(path, art, "", 1)
 	rel = strings.Replace(rel, file, "", 1)
@@ -122,56 +98,53 @@ func (fetcher *Fetcher) UploadFile(path, art string) error {
 	return err
 }
 
-func (d *Fetcher) DownloadArtefactsFromStorage(storage, target string) {
-	list, err := d.StorageFileList(storage)
-	if err != nil {
-		d.AppendTaskOutput("[Download] Failed getting storage file list")
-		return
-	}
-	var storage_data storageci.Storage
-	err = d.GetJSONOptions("/api/storage/"+storage+"/show", map[string]string{}, &storage_data)
-	if err != nil {
-		d.AppendTaskOutput("Downloading failed during retrieveing storage data : " + err.Error())
-		return
-	}
-
-	os.MkdirAll(target, os.ModePerm)
-	d.AppendTaskOutput("Downloading artefacts from " + storage_data.Name)
-	for _, file := range list {
-		trials := 5
-		done := true
-
-		reldir, _ := filepath.Split(file)
-		for done {
-
-			if trials < 0 {
-				done = false
-			}
-			os.MkdirAll(filepath.Join(target, reldir), os.ModePerm)
-			d.AppendTaskOutput("[Download] " + d.BaseURL + "/storage/" + storage_data.Path + file + " to " + filepath.Join(target, file))
-			if ok, err := d.Download(d.BaseURL+"/storage/"+storage_data.Path+file, filepath.Join(target, file)); !ok {
-				d.AppendTaskOutput("[Download] " + file + " failed : " + err.Error())
-				trials--
-			} else {
-				done = false
-				d.AppendTaskOutput("[Download] succeeded ")
-
-			}
-
-		}
-
-	}
-
+func (d *Fetcher) DownloadArtefactsFromStorage(storage, target string) error {
+	return d.DownloadArtefactsGeneric(storage, target, "storage")
 }
 
-func (d *Fetcher) DownloadArtefactsFromNamespace(namespace, target string) {
-	list, err := d.NamespaceFileList(namespace)
-	if err != nil {
-		d.AppendTaskOutput("[Download] Failed getting namespace artefact list")
-		return
+func (d *Fetcher) DownloadArtefactsGeneric(id, target, artefact_type string) error {
+	var list []string
+	var err error
+	var to_download string
+	if artefact_type == "namespace" {
+		list, err = d.NamespaceFileList(id)
+		if err != nil {
+			d.AppendTaskOutput("[Download] Failed getting namespace artefact list")
+			return err
+		}
+		to_download = id
+	} else if artefact_type == "storage" {
+		list, err = d.StorageFileList(id)
+		if err != nil {
+			d.AppendTaskOutput("[Download] Failed getting storage file list")
+			return err
+		}
+		var storage_data storageci.Storage
+		url := d.Config.GetWeb().BuildURI(
+			fmt.Sprintf("/api/%s/%s/show", artefact_type, id))
+		err = d.GetJSONOptions(url, map[string]string{}, &storage_data)
+		if err != nil {
+			d.AppendTaskOutput("Downloading failed during retrieveing storage data : " + err.Error())
+			return err
+		}
+		to_download = storage_data.Path
+
+	} else if artefact_type == "artefact" {
+		list, err = d.TaskFileList(id)
+		if err != nil {
+			d.AppendTaskOutput("[Download] Failed getting task artefacts list")
+			return err
+		}
+		to_download = id
 	}
-	os.MkdirAll(target, os.ModePerm)
-	d.AppendTaskOutput("[Download] artefacts from " + namespace)
+
+	err = os.MkdirAll(target, os.ModePerm)
+	if err != nil {
+		d.AppendTaskOutput("[Download] Error: " + err.Error())
+		return err
+	}
+	d.AppendTaskOutput("[Download] " + artefact_type + " artefacts from " + id)
+	success := true
 	for _, file := range list {
 		trials := 5
 		done := true
@@ -181,10 +154,15 @@ func (d *Fetcher) DownloadArtefactsFromNamespace(namespace, target string) {
 
 			if trials < 0 {
 				done = false
+				success = false
 			}
-			os.MkdirAll(filepath.Join(target, reldir), os.ModePerm)
-			d.AppendTaskOutput("[Download]  " + d.BaseURL + "/namespace/" + namespace + file + " to " + filepath.Join(target, file))
-			if ok, err := d.Download(d.BaseURL+"/namespace/"+namespace+file, filepath.Join(target, file)); !ok {
+			err := os.MkdirAll(filepath.Join(target, reldir), os.ModePerm)
+			if err != nil {
+				d.AppendTaskOutput("[Download] Error: " + err.Error())
+				return err
+			}
+			d.AppendTaskOutput("[Download]  " + d.BaseURL + "/" + artefact_type + "/" + to_download + file + " to " + filepath.Join(target, file))
+			if ok, err := d.Download(d.BaseURL+"/"+artefact_type+"/"+to_download+file, filepath.Join(target, file)); !ok {
 				d.AppendTaskOutput("[Download] failed : " + err.Error())
 				trials--
 			} else {
@@ -196,6 +174,15 @@ func (d *Fetcher) DownloadArtefactsFromNamespace(namespace, target string) {
 
 	}
 
+	if !success {
+		return errors.New("Download failed")
+	}
+
+	return nil
+}
+
+func (d *Fetcher) DownloadArtefactsFromNamespace(namespace, target string) error {
+	return d.DownloadArtefactsGeneric(namespace, target, "namespace")
 }
 
 func responseSuccess(resp *http.Response) bool {
@@ -220,7 +207,12 @@ func (d *Fetcher) Download(url, where string) (bool, error) {
 		return false, err
 	}
 	defer response.Body.Close()
-
+	body := response.Body
+	if d.Config.GetAgent().DownloadRateLimit != 0 {
+		// KB
+		d.AppendTaskOutput("Download with bandwidth limit of: " + strconv.FormatInt(1024*d.Config.GetAgent().DownloadRateLimit, 10))
+		body = flowrate.NewReader(response.Body, 1024*d.Config.GetAgent().DownloadRateLimit)
+	}
 	if !responseSuccess(response) {
 		return false, errors.New("Error: " + response.Status)
 	}
@@ -231,7 +223,7 @@ func (d *Fetcher) Download(url, where string) (bool, error) {
 	}
 	defer output.Close()
 
-	_, err = io.Copy(output, response.Body)
+	_, err = io.Copy(output, body)
 	if err != nil {
 		return false, err
 	}
@@ -248,7 +240,8 @@ func (f *Fetcher) UploadStorageFile(storageid, fullpath, relativepath string) er
 		//	"namespace": dir,
 	}
 
-	request, err := f.Upload("/api/storage/upload", opts, "file", fullpath)
+	url := f.Config.GetWeb().BuildURI("/api/storage/upload")
+	request, err := f.Upload(url, opts, "file", fullpath)
 	if err != nil {
 		panic(err)
 	}
@@ -260,10 +253,8 @@ func (f *Fetcher) UploadStorageFile(storageid, fullpath, relativepath string) er
 		panic(err)
 	} else {
 		var bodyContent []byte
-		fmt.Println(strconv.Itoa(resp.StatusCode))
 		resp.Body.Read(bodyContent)
 		resp.Body.Close()
-		fmt.Println(string(bodyContent))
 	}
 	return nil
 }
@@ -289,7 +280,8 @@ func (f *Fetcher) UploadArtefact(fullpath, relativepath string) error {
 		//	"namespace": dir,
 	}
 
-	if err := f.UploadLargeFile("/api/tasks/artefact/upload", opts, "file", fullpath, 1024); err != nil {
+	url := f.Config.GetWeb().BuildURI("/api/tasks/artefact/upload")
+	if err := f.UploadLargeFile(url, opts, "file", fullpath, f.ChunkSize); err != nil {
 		f.AppendTaskOutput("[Upload] Error while uploading artefact " + file + ": " + err.Error())
 		return err
 	}
@@ -306,23 +298,9 @@ func (f *Fetcher) UploadNamespaceFile(namespace, fullpath, relativepath string) 
 		//	"namespace": dir,
 	}
 
-	request, err := f.Upload("/api/namespace/upload", opts, "file", fullpath)
-
-	if err != nil {
-		panic(err)
-	}
-	f.setAuthHeader(request)
-
-	client := f.newHttpClient()
-	resp, err := client.Do(request)
-	if err != nil {
-		panic(err)
-	} else {
-		var bodyContent []byte
-		fmt.Println(strconv.Itoa(resp.StatusCode))
-		resp.Body.Read(bodyContent)
-		resp.Body.Close()
-		fmt.Println(string(bodyContent))
+	url := f.Config.GetWeb().BuildURI("/api/namespace/upload")
+	if err := f.UploadLargeFile(url, opts, "file", fullpath, f.ChunkSize); err != nil {
+		return err
 	}
 	return nil
 }

@@ -8,38 +8,29 @@ package ghw
 
 import (
 	"fmt"
-	"strings"
 )
 
+type NICCapability struct {
+	Name      string
+	IsEnabled bool
+	CanChange bool
+}
+
 type NIC struct {
-	Name            string
-	BusType         string
-	Driver          string
-	MacAddress      string
-	Model           string
-	Vendor          string
-	IsVirtual       bool
-	EnabledFeatures []string
+	Name         string
+	MacAddress   string
+	IsVirtual    bool
+	Capabilities []*NICCapability
 }
 
 func (n *NIC) String() string {
-	vendorStr := ""
-	if n.Vendor != "" {
-		vendorStr = " [" + strings.TrimSpace(n.Vendor) + "]"
-	}
-	modelStr := ""
-	if n.Model != "" {
-		modelStr = " - " + strings.TrimSpace(n.Model)
-	}
 	isVirtualStr := ""
 	if n.IsVirtual {
 		isVirtualStr = " (virtual)"
 	}
 	return fmt.Sprintf(
-		"%s%s%s%s",
+		"%s%s",
 		n.Name,
-		vendorStr,
-		modelStr,
 		isVirtualStr,
 	)
 }
@@ -48,10 +39,13 @@ type NetworkInfo struct {
 	NICs []*NIC
 }
 
-func Network() (*NetworkInfo, error) {
+func Network(opts ...*WithOption) (*NetworkInfo, error) {
+	mergeOpts := mergeOptions(opts...)
+	ctx := &context{
+		chroot: *mergeOpts.Chroot,
+	}
 	info := &NetworkInfo{}
-	err := netFillInfo(info)
-	if err != nil {
+	if err := ctx.netFillInfo(info); err != nil {
 		return nil, err
 	}
 	return info, nil

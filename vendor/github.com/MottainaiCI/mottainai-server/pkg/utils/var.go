@@ -28,12 +28,15 @@ import (
 	"crypto/rand"
 	"crypto/sha1"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/gob"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"math/big"
+	"net/url"
 	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -69,14 +72,37 @@ func RecurringTimer(what func(), delay time.Duration) chan bool {
 	return stop
 }
 
-func GetBytes(key interface{}) ([]byte, error) {
+func SerializeToString(key interface{}) (string, error) {
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
 	err := enc.Encode(key)
 	if err != nil {
+		return "", err
+	}
+
+	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
+}
+
+func DecodeString(str string) (*bytes.Buffer, error) {
+	//var Task *task.Task
+	by, err := base64.StdEncoding.DecodeString(str)
+	if err != nil {
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	return bytes.NewBuffer(by), err
+}
+
+func DeserializeFromString(str string, t interface{}) error {
+	//var Task *task.Task
+	by, err := base64.StdEncoding.DecodeString(str)
+	if err != nil {
+		return err
+	}
+	d := gob.NewDecoder(bytes.NewBuffer(by))
+	if err := d.Decode(&t); err != nil {
+		return err
+	}
+	return nil
 }
 
 func Hostname() string {
@@ -95,8 +121,6 @@ func GenID() string {
 	id := sha256.New()
 
 	net, _ := ghw.Network()
-
-	fmt.Println(net.String())
 
 	for _, nic := range net.NICs {
 		io.WriteString(id, nic.Name)
@@ -142,6 +166,30 @@ func SHA1(str string) string {
 	h := sha1.New()
 	h.Write([]byte(str))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func Cmd(cmdName string, args []string) (string, string, error) {
+
+	cmd := exec.Command(cmdName, args...)
+	var out bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		return out.String(), stderr.String(), err
+	}
+	return out.String(), stderr.String(), nil
+}
+
+// isValidUrl tests a string to determine if it is a url or not.
+func IsValidUrl(toTest string) bool {
+	_, err := url.ParseRequestURI(toTest)
+	if err != nil {
+		return false
+	} else {
+		return true
+	}
 }
 
 // ShortSHA1 truncates SHA1 string length to at most 10.

@@ -34,9 +34,18 @@ import (
 )
 
 type TaskHandler struct {
-	Tasks map[string]interface{}
+	Tasks  map[string]interface{}
+	Config *setting.Config
+	Err    error
 }
+type Handler func(string) (int, error)
 
+func (h *TaskHandler) AddHandler(s string, handler Handler) {
+	h.Tasks[s] = handler
+}
+func (h *TaskHandler) RemoveHandler(s string) {
+	delete(h.Tasks, s)
+}
 func (h *TaskHandler) Exists(s string) bool {
 	if _, ok := h.Tasks[s]; ok {
 		return true
@@ -44,19 +53,26 @@ func (h *TaskHandler) Exists(s string) bool {
 	return false
 }
 
-func (h *TaskHandler) Handler(s string) func(string) (int, error) {
+func (h *TaskHandler) Handler(s string) Handler {
 	if f, ok := h.Tasks[s]; ok {
-		return f.(func(string) (int, error))
+		return f.(Handler)
 	}
 	panic(errors.New("No task handler found!"))
 }
 
-func DefaultTaskHandler() *TaskHandler {
-	return &TaskHandler{Tasks: map[string]interface{}{
-		"docker_execute": DockerPlayer,
-		"error":          HandleErr,
-		//	"success":        HandleSuccess,
-	}}
+var singletonTaskHandler *TaskHandler
+
+func SetSingleton(th *TaskHandler) {
+	singletonTaskHandler = th
+}
+
+func DefaultTaskHandler(config *setting.Config) *TaskHandler {
+	if singletonTaskHandler != nil {
+		return singletonTaskHandler
+	}
+	th := GenDefaultTaskHandler(config)
+	SetSingleton(th)
+	return th
 }
 
 func HandleArgs(args ...interface{}) (string, int, error) {
@@ -75,17 +91,57 @@ func HandleArgs(args ...interface{}) (string, int, error) {
 	return docID, 0, nil
 }
 
-func DockerPlayer(args ...interface{}) (int, error) {
-	docID, e, err := HandleArgs(args...)
-	player := NewPlayer(docID)
-	executor := NewDockerExecutor()
-	executor.MottainaiClient = client.NewTokenClient(setting.Configuration.AppURL, setting.Configuration.ApiKey)
-	if err != nil {
-		player.EarlyFail(executor, docID, err.Error())
-		return e, err
-	}
+func DockerPlayer(config *setting.Config) func(args ...interface{}) (int, error) {
+	return func(args ...interface{}) (int, error) {
+		docID, e, err := HandleArgs(args...)
+		player := NewPlayer(docID)
+		executor := NewDockerExecutor(config)
+		executor.MottainaiClient = client.NewTokenClient(
+			config.GetWeb().AppURL,
+			config.GetAgent().ApiKey, config)
+		if err != nil {
+			player.EarlyFail(executor, docID, err.Error())
+			return e, err
+		}
 
-	return player.Start(executor)
+		return player.Start(executor)
+	}
+}
+
+func LibvirtPlayer(config *setting.Config) func(args ...interface{}) (int, error) {
+	return func(args ...interface{}) (int, error) {
+		docID, e, err := HandleArgs(args...)
+		player := NewPlayer(docID)
+		executor := NewVagrantExecutor(config)
+		executor.Provider = "libvirt"
+		executor.MottainaiClient = client.NewTokenClient(
+			config.GetWeb().AppURL,
+			config.GetAgent().ApiKey, config)
+		if err != nil {
+			player.EarlyFail(executor, docID, err.Error())
+			return e, err
+		}
+
+		return player.Start(executor)
+	}
+}
+
+func VirtualBoxPlayer(config *setting.Config) func(args ...interface{}) (int, error) {
+	return func(args ...interface{}) (int, error) {
+		docID, e, err := HandleArgs(args...)
+		player := NewPlayer(docID)
+		executor := NewVagrantExecutor(config)
+		executor.Provider = "virtualbox"
+		executor.MottainaiClient = client.NewTokenClient(
+			config.GetWeb().AppURL,
+			config.GetAgent().ApiKey, config)
+		if err != nil {
+			player.EarlyFail(executor, docID, err.Error())
+			return e, err
+		}
+
+		return player.Start(executor)
+	}
 }
 
 func (h *TaskHandler) NewPlanFromJson(data []byte) Plan {
@@ -119,7 +175,7 @@ func (h *TaskHandler) NewTaskFromMap(t map[string]interface{}) Task {
 		directory     string
 		namespace     string
 		commit        string
-		taskname      string
+		tasktype      string
 		output        string
 		image         string
 		status        string
@@ -134,6 +190,7 @@ func (h *TaskHandler) NewTaskFromMap(t map[string]interface{}) Task {
 		root_task     string
 		prune         string
 		tag_namespace string
+		name          string
 		cache_image   string
 		cache_clean   string
 		queue         string
@@ -163,6 +220,9 @@ func (h *TaskHandler) NewTaskFromMap(t map[string]interface{}) Task {
 			script = append(script, v.(string))
 		}
 	}
+	if i, ok := t["name"].(string); ok {
+		name = i
+	}
 	if i, ok := t["owner_id"].(string); ok {
 		owner = i
 	}
@@ -185,8 +245,11 @@ func (h *TaskHandler) NewTaskFromMap(t map[string]interface{}) Task {
 	if str, ok := t["directory"].(string); ok {
 		directory = str
 	}
+	if str, ok := t["type"].(string); ok {
+		tasktype = str
+	}
 	if str, ok := t["task"].(string); ok {
-		taskname = str
+		tasktype = str
 	}
 	if str, ok := t["namespace"].(string); ok {
 		namespace = str
@@ -210,8 +273,9 @@ func (h *TaskHandler) NewTaskFromMap(t map[string]interface{}) Task {
 	if str, ok := t["status"].(string); ok {
 		status = str
 	}
-	if !h.Exists(taskname) {
-		taskname = ""
+	// Do not crash clients if tasktype is not registered in the server
+	if !h.Exists(tasktype) {
+		tasktype = ""
 	}
 	if str, ok := t["image"].(string); ok {
 		image = str
@@ -250,6 +314,10 @@ func (h *TaskHandler) NewTaskFromMap(t map[string]interface{}) Task {
 	if str, ok := t["string"].(string); ok {
 		delayed = str
 	}
+	var publish string
+	if str, ok := t["publish_mode"].(string); ok {
+		publish = str
+	}
 	var entrypoint []string
 	entrypoint = make([]string, 0)
 
@@ -263,19 +331,26 @@ func (h *TaskHandler) NewTaskFromMap(t map[string]interface{}) Task {
 	if str, ok := t["ID"].(string); ok {
 		id = str
 	}
+	var retry string
 
+	if str, ok := t["retry"].(string); ok {
+		retry = str
+	}
 	task := Task{
+		Retry:        retry,
 		ID:           id,
 		Queue:        queue,
 		Source:       source,
 		Script:       script,
 		Delayed:      delayed,
 		Directory:    directory,
-		TaskName:     taskname,
+		Type:         tasktype,
 		Namespace:    namespace,
 		Commit:       commit,
+		Name:         name,
 		Entrypoint:   entrypoint,
 		Output:       output,
+		PublishMode:  publish,
 		Result:       result,
 		Status:       status,
 		Storage:      storage,
@@ -301,7 +376,7 @@ func (h *TaskHandler) NewTaskFromMap(t map[string]interface{}) Task {
 }
 
 func (h *TaskHandler) RegisterTasks(m *machinery.Server) {
-	th := DefaultTaskHandler()
+	th := DefaultTaskHandler(h.Config)
 	err := m.RegisterTasks(th.Tasks)
 	if err != nil {
 		panic(err)
@@ -312,48 +387,52 @@ func (h *TaskHandler) FetchTask(fetcher client.HttpClient) Task {
 	task_data, err := fetcher.GetTask()
 
 	if err != nil {
-		panic(err)
+		h.Err = err
 	}
 	return h.NewTaskFromJson(task_data)
 }
 
-func HandleSuccess(docID string, result int) error {
-	fetcher := client.NewFetcher(docID)
-	fetcher.Token = setting.Configuration.ApiKey
-	res := strconv.Itoa(result)
-	fetcher.SetTaskField("exit_status", res)
-	if result != 0 {
-		fetcher.FailTask("Exited with " + res)
-	} else {
-		fetcher.SuccessTask()
-	}
+func HandleSuccess(config *setting.Config) func(docID string, result int) error {
+	return func(docID string, result int) error {
+		fetcher := client.NewFetcher(docID, config)
+		fetcher.Token = config.GetAgent().ApiKey
+		res := strconv.Itoa(result)
+		fetcher.SetTaskField("exit_status", res)
+		if result != 0 {
+			fetcher.FailTask("Exited with " + res)
+		} else {
+			fetcher.SuccessTask()
+		}
 
-	th := DefaultTaskHandler()
+		th := DefaultTaskHandler(config)
 
-	task_info := th.FetchTask(fetcher)
-	if task_info.Status != setting.TASK_STATE_ASK_STOP {
-		fetcher.FinishTask()
-	} else {
-		fetcher.AbortTask()
+		task_info := th.FetchTask(fetcher)
+		if task_info.Status != setting.TASK_STATE_ASK_STOP {
+			fetcher.FinishTask()
+		} else {
+			fetcher.AbortTask()
+		}
+		return nil
 	}
-	return nil
 }
 
-func HandleErr(errstring, docID string) error {
-	fetcher := client.NewFetcher(docID)
-	fetcher.Token = setting.Configuration.ApiKey
+func HandleErr(config *setting.Config) func(errstring, docID string) error {
+	return func(errstring, docID string) error {
+		fetcher := client.NewFetcher(docID, config)
+		fetcher.Token = config.GetAgent().ApiKey
 
-	fetcher.AppendTaskOutput(errstring)
+		fetcher.AppendTaskOutput(errstring)
 
-	th := DefaultTaskHandler()
+		th := DefaultTaskHandler(config)
 
-	task_info := th.FetchTask(fetcher)
-	if task_info.Status != setting.TASK_STATE_ASK_STOP {
-		fetcher.FinishTask()
-	} else {
-		fetcher.AbortTask()
+		task_info := th.FetchTask(fetcher)
+		if task_info.Status != setting.TASK_STATE_ASK_STOP {
+			fetcher.FinishTask()
+		} else {
+			fetcher.AbortTask()
+		}
+
+		fetcher.ErrorTask()
+		return nil
 	}
-
-	fetcher.ErrorTask()
-	return nil
 }

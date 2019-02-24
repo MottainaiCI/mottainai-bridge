@@ -25,7 +25,12 @@ package agenttasks
 import (
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"time"
+
+	"github.com/ghodss/yaml"
+
+	"io/ioutil"
 )
 
 type Pipeline struct {
@@ -39,6 +44,7 @@ type Pipeline struct {
 	Queue string `json:"queue" form:"queue"`
 	//Status       string   `json:"status" form:"status"`
 	//Result       string   `json:"result" form:"result"`
+	Retry string `json:"retry" form:"retry"`
 
 	Owner       string `json:"pipeline_owner_id" form:"pipeline_owner_id"`
 	Name        string `json:"pipeline_name" form:"pipeline_name"`
@@ -48,13 +54,53 @@ type Pipeline struct {
 	Concurrency string `json:"concurrency" form:"concurrency"`
 }
 
+func PipelineFromJsonFile(file string) (*Pipeline, error) {
+	var t *Pipeline
+	content, err := ioutil.ReadFile(file)
+	if err != nil {
+		return t, err
+	}
+	if err := json.Unmarshal(content, &t); err != nil {
+		return t, err
+	}
+	return t, nil
+}
+
+func PipelineFromYamlFile(file string) (*Pipeline, error) {
+	var t *Pipeline
+	content, err := ioutil.ReadFile(file)
+	if err != nil {
+		return t, err
+	}
+	if err := yaml.Unmarshal(content, &t); err != nil {
+		return t, err
+	}
+	return t, nil
+}
+
+func (t *Pipeline) Trials() int {
+
+	ret, err := strconv.Atoi(t.Retry)
+	if err != nil {
+		return 0
+	}
+
+	return ret
+}
+
 func (t *Pipeline) Reset() {
 
 	t.CreatedTime = time.Now().Format("20060102150405")
 	t.EndTime = ""
 	t.StartTime = ""
 }
-func (t *Pipeline) ToMap() map[string]interface{} {
+
+type PipelineForm struct {
+	*Pipeline
+	Tasks string
+}
+
+func (t *Pipeline) ToMap(serialize bool) map[string]interface{} {
 
 	ts := make(map[string]interface{})
 	val := reflect.ValueOf(t).Elem()
@@ -64,20 +110,20 @@ func (t *Pipeline) ToMap() map[string]interface{} {
 		tag := typeField.Tag
 
 		// XXX: Otherwise gob is confused
-		// fmt.Println(valueField.Type(), reflect.ValueOf(t.Tasks).Kind())
-		// if valueField.Kind() == reflect.ValueOf(t.Tasks).Kind() {
-		// 	m := make(map[string]interface{})
-		// 	elem, _ := valueField.Interface().(map[string]Task)
-		//
-		// 	for i, o := range elem {
-		// 		f := &o
-		// 		m[i] = f.ToMap()
-		// 	}
-		//
-		// 	ts[tag.Get("form")] = m
-		// } else {
-		ts[tag.Get("form")] = valueField.Interface()
-		//}
+		//fmt.Println(valueField.Type(), reflect.ValueOf(t.Tasks).Kind())
+		if valueField.Kind() == reflect.ValueOf(t.Tasks).Kind() && serialize {
+			m := make(map[string]interface{})
+			elem, _ := valueField.Interface().(map[string]Task)
+
+			for i, o := range elem {
+				f := &o
+				m[i] = f.ToMap()
+			}
+
+			ts[tag.Get("form")] = m
+		} else {
+			ts[tag.Get("form")] = valueField.Interface()
+		}
 
 		//fmt.Printf("Field Name: %s,\t Field Value: %v,\t Tag Value: %s\n", typeField.Name, valueField.Interface(), tag.Get("tag_name"))
 	}
@@ -121,7 +167,6 @@ func (h *TaskHandler) NewPipelineFromMap(t map[string]interface{}) Pipeline {
 
 				m := make(map[string]Task)
 				for k, v := range b {
-					//fmt.Println("TIPO", , k)
 					m[k] = h.NewTaskFromMap(v.(map[string]interface{}))
 				}
 
