@@ -31,16 +31,16 @@ import (
 	viper "github.com/spf13/viper"
 )
 
-func newEventRun() *cobra.Command {
+func newEventRun(config *setting.Config) *cobra.Command {
 	var cmd = &cobra.Command{
 		Use:   "run [OPTIONS]",
 		Short: "Run event listener",
 		Args:  cobra.OnlyValidArgs,
 		// TODO: PreRun check of minimal args if --json is not present
 		Run: func(cmd *cobra.Command, args []string) {
-			var v *viper.Viper = setting.Configuration.Viper
+			var v *viper.Viper = config.Viper
 
-			listener := service.NewClient(client.NewTokenClient(v.GetString("master"), v.GetString("apikey")))
+			listener := service.NewClient(client.NewTokenClient(v.GetString("master"), v.GetString("apikey"), config))
 
 			listener.Listen("task.created", func(c service.TaskMap) {
 				fmt.Println("[Task][Create]: ", c)

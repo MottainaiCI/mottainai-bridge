@@ -1,6 +1,7 @@
 /*
 
 Copyright (C) 2017-2018  Ettore Di Giacinto <mudler@gentoo.org>
+                         Daniele Rondina <geaaru@sabayonlinux.org>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,30 +17,25 @@ You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 */
-package main
+
+package event
 
 import (
-	cli "github.com/MottainaiCI/mottainai-bridge/cmd"
-	common "github.com/MottainaiCI/mottainai-bridge/pkg/common"
 	setting "github.com/MottainaiCI/mottainai-server/pkg/settings"
+
+	"github.com/spf13/cobra"
 )
 
-func main() {
+func NewEventCommand(config *setting.Config) *cobra.Command {
 
-	v := setting.Configuration.Viper
-	v.SetDefault("master", "http://localhost:8080")
-	v.SetDefault("profile", "")
-	// Temporary for config print
-	v.SetDefault("config", "")
+	var cmd = &cobra.Command{
+		Use:   "event [command] [OPTIONS]",
+		Short: "Event emitter server",
+	}
 
-	// Initialize Default Viper Configuration
-	setting.GenDefault(v)
+	cmd.AddCommand(
+		newEventRun(config),
+	)
 
-	// Define env variable
-	v.SetEnvPrefix(common.MBRIDGE_ENV_PREFIX)
-	v.AutomaticEnv()
-
-	v.SetTypeByDefaultValue(true)
-
-	cli.Execute()
+	return cmd
 }

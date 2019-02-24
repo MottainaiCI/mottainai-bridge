@@ -1,7 +1,6 @@
 /*
 
 Copyright (C) 2017-2018  Ettore Di Giacinto <mudler@gentoo.org>
-                         Daniele Rondina <geaaru@sabayonlinux.org>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -17,23 +16,13 @@ You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 */
-
-package event
+package main
 
 import (
-	"github.com/spf13/cobra"
+	cli "github.com/MottainaiCI/mottainai-bridge/examples/simplelistener/cmd"
 )
 
-func NewEventCommand() *cobra.Command {
+func main() {
 
-	var cmd = &cobra.Command{
-		Use:   "event [command] [OPTIONS]",
-		Short: "Event emitter server",
-	}
-
-	cmd.AddCommand(
-		newEventRun(),
-	)
-
-	return cmd
+	cli.Execute()
 }
