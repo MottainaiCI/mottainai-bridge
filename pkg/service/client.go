@@ -1,6 +1,6 @@
 /*
 
-Copyright (C) 2017-2018  Ettore Di Giacinto <mudler@gentoo.org>
+Copyright (C) 2017-2019  Ettore Di Giacinto <mudler@gentoo.org>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -26,13 +26,21 @@ import (
 
 	client "github.com/MottainaiCI/mottainai-server/pkg/client"
 	citasks "github.com/MottainaiCI/mottainai-server/pkg/tasks"
+	schema "github.com/MottainaiCI/mottainai-server/routes/schema"
+	v1 "github.com/MottainaiCI/mottainai-server/routes/schema/v1"
 
 	"github.com/mudler/anagent"
 )
 
+type Bridge interface {
+	Listen(e, fn interface{})
+	Publish(e, thing interface{})
+	Run()
+}
+
 type ClientService struct {
 	*anagent.Anagent
-	Client   *client.Fetcher
+	Client   client.HttpClient
 	Tracked  TrackHash
 	PollTime int64
 }
@@ -45,7 +53,7 @@ type TaskUpdate struct {
 }
 type TaskMap map[string]interface{}
 
-func NewClient(c *client.Fetcher) *ClientService {
+func NewBridge(c client.HttpClient) Bridge {
 	return &ClientService{Client: c, Tracked: make(TrackHash), Anagent: anagent.New(), PollTime: int64(2)}
 }
 
@@ -122,7 +130,13 @@ func (d *ClientService) TrackTasks() (TrackHash, map[string]TaskMap, map[string]
 
 func (c *ClientService) TaskList() []citasks.Task {
 	var tlist []citasks.Task
-	c.Client.GetJSONOptions("/api/tasks", map[string]string{}, &tlist)
+	req := schema.Request{
+		Route:  v1.Schema.GetTaskRoute("show_all"),
+		Target: &tlist,
+	}
+	if err := c.Client.Handle(req); err != nil {
+		return tlist
+	}
 
 	sort.Slice(tlist[:], func(i, j int) bool {
 		return tlist[i].CreatedTime > tlist[j].CreatedTime

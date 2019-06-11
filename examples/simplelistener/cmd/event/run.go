@@ -40,20 +40,20 @@ func newEventRun(config *setting.Config) *cobra.Command {
 		Run: func(cmd *cobra.Command, args []string) {
 			var v *viper.Viper = config.Viper
 
-			listener := service.NewClient(client.NewTokenClient(v.GetString("master"), v.GetString("apikey"), config))
+			bridge := service.NewBridge(client.NewTokenClient(v.GetString("master"), v.GetString("apikey"), config))
 
-			listener.Listen("task.created", func(c service.TaskMap) {
+			bridge.Listen("task.created", func(c service.TaskMap) {
 				fmt.Println("[Task][Create]: ", c)
 			})
 
-			listener.Listen("task.removed", func(c service.TaskMap) {
+			bridge.Listen("task.removed", func(c service.TaskMap) {
 				fmt.Println("[Task][Remove]:", c)
 			})
 
-			listener.Listen("task.update", func(TaskUpdates *service.TaskUpdate) {
+			bridge.Listen("task.update", func(TaskUpdates *service.TaskUpdate) {
 				fmt.Println("[Task][Update]:", TaskUpdates.Task, "\n[Diff ]", TaskUpdates.Diff)
 			})
-			listener.Run()
+			bridge.Run()
 		},
 	}
 
