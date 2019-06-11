@@ -24,7 +24,6 @@ package agenttasks
 
 import (
 	"errors"
-	"path"
 	"strings"
 	"time"
 
@@ -67,38 +66,49 @@ func purgeImageName(image string) string {
 	return strings.Replace(image, "/", "-", -1)
 }
 
-func (d *DockerExecutor) Play(docID string) (int, error) {
-	fetcher := d.MottainaiClient
-	th := DefaultTaskHandler(d.Config)
-	task_info := th.FetchTask(fetcher)
-	image := task_info.Image
+func (d *DockerExecutor) HandleCacheImagePush(req StateRequest, task_info Task) {
+	if len(task_info.CacheImage) > 0 {
+		d.Report("Saving container to " + req.CacheImage)
+		d.CommitImage(req.ContainerID, req.CacheImage, "latest")
+		// Push image, if a cache_registry is configured in the node
+		if err := d.PushImage(req.CacheImage); err != nil {
+			d.Report("Failed pushing image to cache registry: " + err.Error())
+		} else {
+			d.Report("Image pushed to cache registry successfully")
+		}
+	}
+}
 
+func (d *DockerExecutor) ImageToCacheName(image string) string {
+
+	if t, oktype := d.Config.GetAgent().CacheRegistryCredentials["type"]; oktype && t == "docker" {
+
+		toPull := purgeImageName(image)
+		if e, ok := d.Config.GetAgent().CacheRegistryCredentials["entity"]; ok {
+			toPull = e + "/" + toPull
+		}
+
+		if baseUrl, okb := d.Config.GetAgent().CacheRegistryCredentials["baseurl"]; okb {
+			toPull = baseUrl + toPull
+		}
+
+		return toPull
+	}
+	return image
+}
+
+func (d *DockerExecutor) ResolveCachedImage(task_info Task) (string, string, error) {
+	image := task_info.Image
+	// That's the image we will update in case caching is enabled
 	sharedName, err := d.TaskExecutor.CreateSharedImageName(&task_info)
 	if err != nil {
-		return 1, err
+		return "", sharedName, err
 	}
-
-	artdir := d.Context.ArtefactDir
-	storagetmp := d.Context.StorageDir
-	git_repo_dir := d.Context.SourceDir
-
-	var execute_script = "mottainai-run"
-
-	if len(task_info.Script) > 0 {
-		execute_script = strings.Join(task_info.Script, " && ")
-	}
-	// XXX: To replace with PID handling and background process.
-	// XXX: Exp. in docker container
-	// XXX: Start with docker, monitor it.
-	// XXX: optional args, with --priviledged and -v socket
-	docker_client := d.DockerClient
 
 	if len(task_info.Image) > 0 {
-
 		if len(task_info.CacheImage) > 0 {
-
 			if img, err := d.FindImage(sharedName); err == nil {
-				d.Report("Cached image found: " + img + " " + sharedName)
+				d.Report(">> Cached image found: " + img + " " + sharedName)
 				if len(task_info.CacheClean) > 0 {
 					d.Report("Not using previously cached image - deleting image: " + sharedName)
 					d.RemoveImage(sharedName)
@@ -110,158 +120,123 @@ func (d *DockerExecutor) Play(docID string) (int, error) {
 			}
 
 			if len(task_info.CacheClean) == 0 {
-				// Retrieve cached image into the hub
-				if t, oktype := d.Config.GetAgent().CacheRegistryCredentials["type"]; oktype && t == "docker" {
+				toPull := d.ImageToCacheName(sharedName)
 
-					toPull := purgeImageName(sharedName)
-					if e, ok := d.Config.GetAgent().CacheRegistryCredentials["entity"]; ok {
-						toPull = e + "/" + toPull
-					}
-					d.Report("Try to pull cache (" + toPull + ") image from defined registry or from dockerhub")
+				d.Report("Try to pull cache (" + toPull + ") image from defined registry or from dockerhub")
 
-					if baseUrl, okb := d.Config.GetAgent().CacheRegistryCredentials["baseurl"]; okb {
-						toPull = baseUrl + toPull
-					}
-
-					if e := d.PullImage(toPull); e == nil {
-						image = toPull
-						d.Report("Using pulled image:  " + image)
-					} else {
-						d.Report("No image could be fetched by cache registry")
-					}
+				if e := d.PullImage(toPull); e == nil {
+					image = toPull
+					d.Report(">> Using pulled image:  " + image)
+				} else {
+					d.Report(">> No image could be fetched by cache registry")
 				}
 			}
-
 		}
 
-		d.Report("Pulling image: " + task_info.Image)
-		if err := d.PullImage(task_info.Image); err != nil {
-			return 1, err
+		d.Report(">> Pulling image: " + image)
+		if err := d.PullImage(image); err != nil {
+			return "", sharedName, err
 		}
-		d.Report("Pulling image: DONE!")
+		d.Report(">> Pulling image: DONE!")
 	}
-	//var args []string
-	var git_root_path = d.Context.RootTaskDir
-	var git_build_root_path = path.Join(git_root_path, task_info.Directory)
+	return image, sharedName, nil
+}
 
-	var storage_path = "storage"
-	var artefact_path = "artefacts"
+func (d *DockerExecutor) AttachContainerReport(container *docker.Container) {
+	utils.ContainerOutputAttach(func(s string) {
+		d.Report(s)
+	}, d.DockerClient, container)
+}
 
-	if len(task_info.ArtefactPath) > 0 {
-		artefact_path = task_info.ArtefactPath
-	}
+func (d *DockerExecutor) Play(docID string) (int, error) {
+	task_info := DefaultTaskHandler(d.Config).FetchTask(d.MottainaiClient)
+	instruction := NewInstructionFromTask(task_info)
 
-	if len(task_info.StoragePath) > 0 {
-		storage_path = task_info.StoragePath
-	}
+	d.Context.ResolveMounts(instruction)
 
-	var storage_root_path = path.Join(git_build_root_path, storage_path)
-
-	var ContainerBinds []string
-
-	var artefactdir string
-	var storagedir string
-
-	for _, b := range task_info.Binds {
-		ContainerBinds = append(ContainerBinds, b)
-	}
-
-	if d.Config.GetAgent().DockerInDocker {
-		ContainerBinds = append(ContainerBinds, d.Config.GetAgent().DockerEndpointDiD+":/var/run/docker.sock")
-		ContainerBinds = append(ContainerBinds, path.Join(git_build_root_path, artefact_path)+":"+path.Join(git_build_root_path, artefact_path))
-		ContainerBinds = append(ContainerBinds, storage_root_path+":"+storage_root_path)
-
-		artefactdir = path.Join(git_build_root_path, artefact_path)
-		storagedir = storage_root_path
-	} else {
-		ContainerBinds = append(ContainerBinds, artdir+":"+path.Join(git_build_root_path, artefact_path))
-		ContainerBinds = append(ContainerBinds, storagetmp+":"+storage_root_path)
-
-		artefactdir = artdir
-		storagedir = storagetmp
-	}
-
-	if err := d.DownloadArtefacts(artefactdir, storagedir); err != nil {
+	// That is the image we are using for the build
+	image, cachedimage, err := d.ResolveCachedImage(task_info)
+	if err != nil {
 		return 1, err
 	}
 
-	//ContainerVolumes = append(ContainerVolumes, git_repo_dir+":/build")
-	if len(git_repo_dir) > 0 {
-		ContainerBinds = append(ContainerBinds, git_repo_dir+":"+git_root_path)
+	mapping := d.Context.ResolveArtefactsMounts(ArtefactMapping{
+		ArtefactPath: task_info.ArtefactPath,
+		StoragePath:  task_info.StoragePath,
+	}, instruction, d.Config.GetAgent().DockerInDocker)
+
+	if d.Config.GetAgent().DockerInDocker {
+		instruction.AddMount(d.Config.GetAgent().DockerEndpointDiD + ":/var/run/docker.sock")
 	}
 
-	createContHostConfig := docker.HostConfig{
-		Privileged: d.Config.GetAgent().DockerPriviledged,
-		Binds:      ContainerBinds,
-		CapAdd:     d.Config.GetAgent().DockerCaps,
-		CapDrop:    d.Config.GetAgent().DockerCapsDrop,
-		//	LogConfig:  docker.LogConfig{Type: "json-file"}
-	}
-	var containerconfig = &docker.Config{Image: image, WorkingDir: git_build_root_path}
-	d.Report("Execute: " + execute_script)
-	if len(execute_script) > 0 {
-		containerconfig.Cmd = []string{"-c", "pwd;ls -liah;" + execute_script}
-		containerconfig.Entrypoint = []string{"/bin/bash"}
-	}
+	instruction.Report(d)
+	d.Context.Report(d)
 
-	if len(task_info.Entrypoint) > 0 {
-		containerconfig.Entrypoint = task_info.Entrypoint
-		containerconfig.Cmd = task_info.Script
-		d.Report("Entrypoint: " + strings.Join(containerconfig.Entrypoint, ","))
+	if err := d.DownloadArtefacts(mapping.ArtefactPath, mapping.StoragePath); err != nil {
+		return 1, err
 	}
+	d.Report(">> Creating container..")
 
-	if len(task_info.Environment) > 0 {
-		containerconfig.Env = task_info.Environment
-		//	d.Report("Env: ")
-		//	for _, e := range task_info.Environment {
-		//		d.Report("- " + e)
-		//	}
-	}
-
-	d.Report("Binds: ")
-	for _, v := range ContainerBinds {
-		d.Report("- " + v)
-	}
-
-	d.Report("Container working dir: " + git_build_root_path)
-	d.Report("Image: " + containerconfig.Image)
-
-	container, err := docker_client.CreateContainer(docker.CreateContainerOptions{
-		Config:     containerconfig,
-		HostConfig: &createContHostConfig,
+	container, err := d.DockerClient.CreateContainer(docker.CreateContainerOptions{
+		Config: &docker.Config{
+			Image:      image,
+			WorkingDir: d.Context.HostPath(task_info.Directory),
+			Cmd:        instruction.CommandList(),
+			Entrypoint: instruction.EntrypointList(),
+			Env:        instruction.EnvironmentList(),
+		},
+		HostConfig: &docker.HostConfig{
+			Privileged: d.Config.GetAgent().DockerPriviledged,
+			Binds:      instruction.MountsList(),
+			CapAdd:     d.Config.GetAgent().DockerCaps,
+			CapDrop:    d.Config.GetAgent().DockerCapsDrop,
+		},
 	})
-
 	if err != nil {
-		panic(err)
+		d.Report("Creating container error: " + err.Error())
+		return 1, err
 	}
-
-	utils.ContainerOutputAttach(func(s string) {
-		d.Report(s)
-	}, docker_client, container)
-	defer d.CleanUpContainer(container.ID)
-	if d.Config.GetAgent().DockerKeepImg == false {
-		defer d.RemoveImage(task_info.Image)
-	}
-
+	d.AttachContainerReport(container)
 	d.Report("Created container ID: " + container.ID)
-
-	err = docker_client.StartContainer(container.ID, &createContHostConfig)
-	if err != nil {
-		panic(err)
+	request := StateRequest{
+		ContainerID:   container.ID,
+		ImagesToClean: []string{image},
+		CacheImage:    cachedimage,
+		Prune:         len(task_info.Prune) > 0,
 	}
-	d.Report("Started Container " + container.ID)
 
+	defer d.CleanUpContainer(request)
+
+	// FIXME: Replace with goroutine?
+	err = d.DockerClient.StartContainer(container.ID, container.HostConfig)
+	if err != nil {
+		d.Report("Starting container error: " + err.Error())
+		return 1, err
+	}
+	d.Report(">> Started Container " + container.ID)
+
+	// We always update the cache image
+	return d.Handle(request, mapping)
+}
+
+type StateRequest struct {
+	ContainerID, CacheImage string
+	ImagesToClean           []string
+	Prune                   bool
+}
+
+func (d *DockerExecutor) Handle(req StateRequest, mapping ArtefactMapping) (int, error) {
 	starttime := time.Now()
 
 	for {
 		time.Sleep(1 * time.Second)
 		now := time.Now()
-		task_info = th.FetchTask(fetcher)
+		task_info := DefaultTaskHandler(d.Config).FetchTask(d.MottainaiClient)
 		timedout := (task_info.TimeOut != 0 && (now.Sub(starttime).Seconds() > task_info.TimeOut))
 		if task_info.IsStopped() || timedout {
 			return d.HandleTaskStop(timedout)
 		}
-		c_data, err := docker_client.InspectContainer(container.ID) // update our container information
+		c_data, err := d.DockerClient.InspectContainer(req.ContainerID) // update our container information
 		if err != nil {
 			//fetcher.SetTaskResult("error")
 			//fetcher.SetTaskStatus("done")
@@ -269,36 +244,16 @@ func (d *DockerExecutor) Play(docID string) (int, error) {
 			return 0, nil
 		}
 		if c_data.State.Running == false {
+			d.Report("Container execution terminated")
 
-			var err error
-
-			to_upload := artdir
-			if d.Config.GetAgent().DockerInDocker {
-				to_upload = path.Join(git_root_path, task_info.Directory, artefact_path)
-			}
-
-			err = d.UploadArtefacts(to_upload)
+			d.Report("Upload of artifacts starts")
+			err := d.UploadArtefacts(mapping.ArtefactPath)
 			if err != nil {
 				return 1, err
 			}
-			d.Report("Container execution terminated")
+			d.Report("Upload of artifacts terminated")
 
-			if len(task_info.CacheImage) > 0 {
-				d.Report("Saving container to " + sharedName)
-				d.CommitImage(container.ID, sharedName, "latest")
-
-				// Push image, if a cache_registry is configured in the node
-				if err := d.PushImage(sharedName); err != nil {
-					d.Report("Failed pushing image to cache registry: " + err.Error())
-				} else {
-					d.Report("Image pushed to cache registry successfully")
-				}
-			}
-
-			if len(task_info.Prune) > 0 {
-				d.Report("Pruning unused docker resources")
-				d.Prune()
-			}
+			d.HandleCacheImagePush(req, task_info)
 
 			return c_data.State.ExitCode, nil
 		}
@@ -346,12 +301,31 @@ func (d *DockerExecutor) NewImageFrom(image, newimage, tag string) error {
 	return nil
 }
 
-func (d *DockerExecutor) CleanUpContainer(ID string) error {
-	return d.DockerClient.RemoveContainer(docker.RemoveContainerOptions{
-		ID:            ID,
+func (d *DockerExecutor) CleanUpContainer(req StateRequest) error {
+	d.Report("Cleanup container")
+
+	err := d.DockerClient.RemoveContainer(docker.RemoveContainerOptions{
+		ID:            req.ContainerID,
 		Force:         true,
 		RemoveVolumes: true,
 	})
+	if err != nil {
+		d.Report("Container cleanup error: ", err.Error())
+	}
+
+	if d.Config.GetAgent().DockerKeepImg == false {
+		for _, i := range req.ImagesToClean {
+			d.Report("Removing image " + i)
+			d.RemoveImage(i)
+		}
+	}
+
+	if req.Prune {
+		d.Report("Pruning unused docker resources")
+		d.Prune()
+	}
+
+	return err
 }
 
 func (d *DockerExecutor) PullImage(image string) error {
@@ -384,29 +358,31 @@ func (d *DockerExecutor) PushImage(image string) error {
 
 		if okname && okpassword {
 			baseurl, okbaseurl := d.Config.GetAgent().CacheRegistryCredentials["baseurl"]
-			entity, okentity := d.Config.GetAgent().CacheRegistryCredentials["entity"]
 			imageopts := docker.PushImageOptions{}
 			auth := docker.AuthConfiguration{}
 			auth.Password = password
 			auth.Username = username
 			serveraddress, okserveraddress := d.Config.GetAgent().CacheRegistryCredentials["serveraddress"]
+
+			imageopts.Name = d.ImageToCacheName(image)
+
 			if okserveraddress {
 				auth.ServerAddress = serveraddress
 			}
-			if okentity {
-				imageopts.Name = entity + "/" + purgeImageName(image)
+
+			if d.ImageToCacheName(image) != image {
 				if err := d.NewImageFrom(image, imageopts.Name, "latest"); err != nil {
 					return err
 				}
 				d.MottainaiClient.AppendTaskOutput("Tagged image: " + image + " ----> " + imageopts.Name)
-			} else {
-				imageopts.Name = purgeImageName(image)
 			}
-			d.MottainaiClient.AppendTaskOutput("Pushing image: " + imageopts.Name)
 
 			if okbaseurl {
 				imageopts.Registry = baseurl
 			}
+
+			d.MottainaiClient.AppendTaskOutput("Pushing image: " + imageopts.Name)
+
 			return d.DockerClient.PushImage(imageopts, auth)
 		}
 	} else {

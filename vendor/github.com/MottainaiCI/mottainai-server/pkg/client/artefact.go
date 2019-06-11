@@ -1,6 +1,6 @@
 /*
 
-Copyright (C) 2018  Ettore Di Giacinto <mudler@gentoo.org>
+Copyright (C) 2018-2019  Ettore Di Giacinto <mudler@gentoo.org>
 Credits goes also to Gogs authors, some code portions and re-implemented design
 are also coming from the Gogs project, which is using the go-macaron framework
 and was really source of ispiration. Kudos to them!
@@ -26,7 +26,6 @@ import (
 	"github.com/mxk/go-flowrate/flowrate"
 
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -34,14 +33,24 @@ import (
 	"strconv"
 	"strings"
 
+	schema "github.com/MottainaiCI/mottainai-server/routes/schema"
+	v1 "github.com/MottainaiCI/mottainai-server/routes/schema/v1"
+
+	utils "github.com/MottainaiCI/mottainai-server/pkg/utils"
+
 	storageci "github.com/MottainaiCI/mottainai-server/pkg/storage"
 )
 
 func (d *Fetcher) NamespaceFileList(namespace string) ([]string, error) {
 	var fileList []string
-	url := d.Config.GetWeb().BuildURI(
-		fmt.Sprintf("/api/namespace/%s/list", namespace))
-	err := d.GetJSONOptions(url, map[string]string{}, &fileList)
+
+	req := schema.Request{
+		Route:   v1.Schema.GetNamespaceRoute("show_artefacts"),
+		Options: map[string]interface{}{":name": namespace},
+		Target:  &fileList,
+	}
+
+	err := d.Handle(req)
 	if err != nil {
 		return []string{}, err
 	}
@@ -51,9 +60,14 @@ func (d *Fetcher) NamespaceFileList(namespace string) ([]string, error) {
 
 func (d *Fetcher) StorageFileList(storage string) ([]string, error) {
 	var fileList []string
-	url := d.Config.GetWeb().BuildURI(
-		fmt.Sprintf("/api/storage/%s/list", storage))
-	err := d.GetJSONOptions(url, map[string]string{}, &fileList)
+
+	req := schema.Request{
+		Route:   v1.Schema.GetStorageRoute("show_artefacts"),
+		Options: map[string]interface{}{":id": storage},
+		Target:  &fileList,
+	}
+
+	err := d.Handle(req)
 	if err != nil {
 		return []string{}, err
 	}
@@ -63,9 +77,14 @@ func (d *Fetcher) StorageFileList(storage string) ([]string, error) {
 
 func (d *Fetcher) TaskFileList(task string) ([]string, error) {
 	var fileList []string
-	url := d.Config.GetWeb().BuildURI(
-		fmt.Sprintf("/api/tasks/%s/artefacts", task))
-	err := d.GetJSONOptions(url, map[string]string{}, &fileList)
+
+	req := schema.Request{
+		Route:   v1.Schema.GetTaskRoute("artefact_list"),
+		Options: map[string]interface{}{":id": task},
+		Target:  &fileList,
+	}
+
+	err := d.Handle(req)
 	if err != nil {
 		return []string{}, err
 	}
@@ -120,13 +139,19 @@ func (d *Fetcher) DownloadArtefactsGeneric(id, target, artefact_type string) err
 			return err
 		}
 		var storage_data storageci.Storage
-		url := d.Config.GetWeb().BuildURI(
-			fmt.Sprintf("/api/%s/%s/show", artefact_type, id))
-		err = d.GetJSONOptions(url, map[string]string{}, &storage_data)
+
+		req := schema.Request{
+			Route:   v1.Schema.GetStorageRoute("show"),
+			Options: map[string]interface{}{":id": id},
+			Target:  &storage_data,
+		}
+
+		err := d.Handle(req)
 		if err != nil {
 			d.AppendTaskOutput("Downloading failed during retrieveing storage data : " + err.Error())
 			return err
 		}
+
 		to_download = storage_data.Path
 
 	} else if artefact_type == "artefact" {
@@ -161,8 +186,10 @@ func (d *Fetcher) DownloadArtefactsGeneric(id, target, artefact_type string) err
 				d.AppendTaskOutput("[Download] Error: " + err.Error())
 				return err
 			}
-			d.AppendTaskOutput("[Download]  " + d.BaseURL + "/" + artefact_type + "/" + to_download + file + " to " + filepath.Join(target, file))
-			if ok, err := d.Download(d.BaseURL+"/"+artefact_type+"/"+to_download+file, filepath.Join(target, file)); !ok {
+			location := d.BaseURL + "/" + artefact_type + "/" + to_download + utils.PathEscape(file)
+
+			d.AppendTaskOutput("[Download]  " + location + " to " + filepath.Join(target, file))
+			if ok, err := d.Download(location, filepath.Join(target, file)); !ok {
 				d.AppendTaskOutput("[Download] failed : " + err.Error())
 				trials--
 			} else {
@@ -233,28 +260,18 @@ func (d *Fetcher) Download(url, where string) (bool, error) {
 func (f *Fetcher) UploadStorageFile(storageid, fullpath, relativepath string) error {
 	_, file := filepath.Split(fullpath)
 
-	opts := map[string]string{
-		"name":      file,
-		"path":      relativepath,
-		"storageid": storageid,
-		//	"namespace": dir,
+	req := schema.Request{
+		Route: v1.Schema.GetStorageRoute("upload"),
+		Options: map[string]interface{}{
+			"name":      file,
+			"path":      relativepath,
+			"storageid": storageid,
+		},
 	}
 
-	url := f.Config.GetWeb().BuildURI("/api/storage/upload")
-	request, err := f.Upload(url, opts, "file", fullpath)
-	if err != nil {
-		panic(err)
-	}
-	f.setAuthHeader(request)
-
-	client := f.newHttpClient()
-	resp, err := client.Do(request)
-	if err != nil {
-		panic(err)
-	} else {
-		var bodyContent []byte
-		resp.Body.Read(bodyContent)
-		resp.Body.Close()
+	if err := f.HandleUploadLargeFile(req, "file", fullpath, f.ChunkSize); err != nil {
+		f.AppendTaskOutput("[Upload] Error while uploading artefact " + file + ": " + err.Error())
+		return err
 	}
 	return nil
 }
@@ -273,15 +290,16 @@ func (f *Fetcher) UploadArtefactRetry(fullpath, relativepath string, trials int)
 func (f *Fetcher) UploadArtefact(fullpath, relativepath string) error {
 	_, file := filepath.Split(fullpath)
 
-	opts := map[string]string{
-		"name":   file,
-		"path":   relativepath,
-		"taskid": f.docID,
-		//	"namespace": dir,
+	req := schema.Request{
+		Route: v1.Schema.GetTaskRoute("artefact_upload"),
+		Options: map[string]interface{}{
+			"name":   file,
+			"path":   relativepath,
+			"taskid": f.docID,
+		},
 	}
 
-	url := f.Config.GetWeb().BuildURI("/api/tasks/artefact/upload")
-	if err := f.UploadLargeFile(url, opts, "file", fullpath, f.ChunkSize); err != nil {
+	if err := f.HandleUploadLargeFile(req, "file", fullpath, f.ChunkSize); err != nil {
 		f.AppendTaskOutput("[Upload] Error while uploading artefact " + file + ": " + err.Error())
 		return err
 	}
@@ -291,15 +309,16 @@ func (f *Fetcher) UploadArtefact(fullpath, relativepath string) error {
 func (f *Fetcher) UploadNamespaceFile(namespace, fullpath, relativepath string) error {
 	_, file := filepath.Split(fullpath)
 
-	opts := map[string]string{
-		"name":      file,
-		"path":      relativepath,
-		"namespace": namespace,
-		//	"namespace": dir,
+	req := schema.Request{
+		Route: v1.Schema.GetNamespaceRoute("upload"),
+		Options: map[string]interface{}{
+			"name":      file,
+			"path":      relativepath,
+			"namespace": namespace,
+		},
 	}
 
-	url := f.Config.GetWeb().BuildURI("/api/namespace/upload")
-	if err := f.UploadLargeFile(url, opts, "file", fullpath, f.ChunkSize); err != nil {
+	if err := f.HandleUploadLargeFile(req, "file", fullpath, f.ChunkSize); err != nil {
 		return err
 	}
 	return nil

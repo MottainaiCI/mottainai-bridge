@@ -170,33 +170,35 @@ func (h *TaskHandler) NewPlanFromMap(t map[string]interface{}) Plan {
 func (h *TaskHandler) NewTaskFromMap(t map[string]interface{}) Task {
 
 	var (
-		source        string
-		script        []string
-		directory     string
-		namespace     string
-		commit        string
-		tasktype      string
-		output        string
-		image         string
-		status        string
-		result        string
-		exit_status   string
-		created_time  string
-		start_time    string
-		end_time      string
-		storage       string
-		storage_path  string
-		artefact_path string
-		root_task     string
-		prune         string
-		tag_namespace string
-		name          string
-		cache_image   string
-		cache_clean   string
-		queue         string
-		owner, node   string
-		environment   []string
-		binds         []string
+		source           string
+		script           []string
+		directory        string
+		namespace        string
+		commit           string
+		tasktype         string
+		output           string
+		image            string
+		status           string
+		result           string
+		exit_status      string
+		created_time     string
+		start_time       string
+		end_time         string
+		last_update_time string
+		storage          string
+		storage_path     string
+		artefact_path    string
+		root_task        string
+		prune            string
+		tag_namespace    string
+		name             string
+		cache_image      string
+		cache_clean      string
+		queue            string
+		owner, node      string
+		privkey          string
+		environment      []string
+		binds            []string
 	)
 
 	binds = make([]string, 0)
@@ -241,7 +243,9 @@ func (h *TaskHandler) NewTaskFromMap(t map[string]interface{}) Task {
 	if str, ok := t["source"].(string); ok {
 		source = str
 	}
-
+	if str, ok := t["privkey"].(string); ok {
+		privkey = str
+	}
 	if str, ok := t["directory"].(string); ok {
 		directory = str
 	}
@@ -288,6 +292,9 @@ func (h *TaskHandler) NewTaskFromMap(t map[string]interface{}) Task {
 	}
 	if str, ok := t["start_time"].(string); ok {
 		start_time = str
+	}
+	if str, ok := t["last_update_time"].(string); ok {
+		last_update_time = str
 	}
 	if str, ok := t["end_time"].(string); ok {
 		end_time = str
@@ -341,6 +348,7 @@ func (h *TaskHandler) NewTaskFromMap(t map[string]interface{}) Task {
 		ID:           id,
 		Queue:        queue,
 		Source:       source,
+		PrivKey:      privkey,
 		Script:       script,
 		Delayed:      delayed,
 		Directory:    directory,
@@ -361,6 +369,7 @@ func (h *TaskHandler) NewTaskFromMap(t map[string]interface{}) Task {
 		CreatedTime:  created_time,
 		StartTime:    start_time,
 		EndTime:      end_time,
+		UpdatedTime:  last_update_time,
 		RootTask:     root_task,
 		TagNamespace: tag_namespace,
 		Node:         node,
@@ -395,7 +404,7 @@ func (h *TaskHandler) FetchTask(fetcher client.HttpClient) Task {
 func HandleSuccess(config *setting.Config) func(docID string, result int) error {
 	return func(docID string, result int) error {
 		fetcher := client.NewFetcher(docID, config)
-		fetcher.Token = config.GetAgent().ApiKey
+		fetcher.SetToken(config.GetAgent().ApiKey)
 		res := strconv.Itoa(result)
 		fetcher.SetTaskField("exit_status", res)
 		if result != 0 {
@@ -419,7 +428,7 @@ func HandleSuccess(config *setting.Config) func(docID string, result int) error 
 func HandleErr(config *setting.Config) func(errstring, docID string) error {
 	return func(errstring, docID string) error {
 		fetcher := client.NewFetcher(docID, config)
-		fetcher.Token = config.GetAgent().ApiKey
+		fetcher.SetToken(config.GetAgent().ApiKey)
 
 		fetcher.AppendTaskOutput(errstring)
 

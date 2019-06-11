@@ -68,6 +68,10 @@ type WebConfig struct {
 	WebHookToken           string `mapstructure:"webhook_token"`
 
 	LockPath string `mapstructure:"lock_path"`
+
+	HealthCheckInterval int `mapstructure:"healthcheck_interval"`
+	TaskDeadline        int `mapstructure:"task_deadline"`
+	NodeDeadline        int `mapstructure:"node_deadline"`
 }
 
 type StorageConfig struct {
@@ -81,6 +85,13 @@ type StorageConfig struct {
 type DatabaseConfig struct {
 	DBEngine string `mapstructure:"engine"`
 	DBPath   string `mapstructure:"db_path"`
+
+	Endpoints    []string `mapstructure:"db_endpoints"`
+	User         string   `mapstructure:"db_user"`
+	DatabaseName string   `mapstructure:"db_name"`
+	Password     string   `mapstructure:"db_password"`
+	CertPath     string   `mapstructure:"db_certpath"`
+	KeyPath      string   `mapstructure:"db_keypath"`
 }
 
 type BrokerConfig struct {
@@ -153,11 +164,12 @@ type AgentConfig struct {
 }
 
 type GeneralConfig struct {
-	Debug    bool   `mapstructure:"debug"`
-	LogFile  string `mapstructure:"logfile"`
-	LogLevel string `mapstructure:"loglevel"`
-	TLSCert  string `mapstructure:"tls_cert"`
-	TLSKey   string `mapstructure:"tls_key"`
+	Debug         bool   `mapstructure:"debug"`
+	LogFile       string `mapstructure:"logfile"`
+	LogLevel      string `mapstructure:"loglevel"`
+	TLSCert       string `mapstructure:"tls_cert"`
+	TLSKey        string `mapstructure:"tls_key"`
+	ClientTimeout int    `mapstructure:"client_timeout"`
 }
 
 type Config struct {
@@ -226,6 +238,9 @@ func GenDefault(viper *v.Viper) {
 	viper.SetDefault("web.github_token_user", "")
 	viper.SetDefault("web.webhook_token", "")
 	viper.SetDefault("web.lock_path", "/srv/mottainai/lock")
+	viper.SetDefault("web.task_deadline", 21600) // 6h
+	viper.SetDefault("web.node_deadline", 21600)
+	viper.SetDefault("web.healthcheck_interval", 800)
 
 	viper.SetDefault("storage.type", "dir")
 	viper.SetDefault("storage.artefact_path", "./artefact")
@@ -234,6 +249,12 @@ func GenDefault(viper *v.Viper) {
 
 	viper.SetDefault("db.engine", "tiedot")
 	viper.SetDefault("db.db_path", "./.DB")
+	viper.SetDefault("db.db_endpoints", []string{})
+	viper.SetDefault("db.db_user", "")
+	viper.SetDefault("db.db_name", "")
+	viper.SetDefault("db.db_password", "")
+	viper.SetDefault("db.db_certpath", "")
+	viper.SetDefault("db.db_keypath", "")
 
 	viper.SetDefault("broker.handle_signal", true)
 	viper.SetDefault("broker.type", "amqp")
@@ -241,9 +262,9 @@ func GenDefault(viper *v.Viper) {
 	viper.SetDefault("broker.broker", "amqp://guest@127.0.0.1:5672/")
 	viper.SetDefault("broker.default_queue", "global_tasks")
 	viper.SetDefault("broker.result_backend", "amqp://guest@127.0.0.1:5672/")
-	viper.SetDefault("broker.mgmt_uri", "http://127.0.0.1:15672")
-	viper.SetDefault("broker.pass", "guest")
-	viper.SetDefault("broker.user", "guest")
+	viper.SetDefault("broker.mgmt_uri", "")
+	viper.SetDefault("broker.pass", "")
+	viper.SetDefault("broker.user", "")
 	viper.SetDefault("broker.exchange", "machinery_exchange")
 	viper.SetDefault("broker.exchange_type", "direct")
 	viper.SetDefault("broker.binding_key", "machinery_task")
@@ -285,6 +306,7 @@ func GenDefault(viper *v.Viper) {
 	viper.SetDefault("general.tls_key", "")
 	viper.SetDefault("general.debug", false)
 	viper.SetDefault("general.logfile", "")
+	viper.SetDefault("general.client_timeout", 360)
 	viper.SetDefault("general.loglevel", "info")
 }
 
@@ -322,7 +344,7 @@ func (c *WebConfig) BuildURI(pattern string) string {
 			path = path[0 : len(path)-1]
 		}
 	}
-	if pattern[0:1] != "/" {
+	if len(pattern) != 0 && pattern[0:1] != "/" {
 		pattern = "/" + pattern
 	}
 	return path + pattern
@@ -412,6 +434,10 @@ web:
   webhook_token: %s
 
   lock_path: %s
+
+  task_deadline: %d
+  node_deadline: %d
+  healthcheck_interval: %d
 `,
 		c.Protocol, c.AppSubURL,
 		c.HTTPAddr, c.HTTPPort,
@@ -422,7 +448,7 @@ web:
 		c.AccessToken, c.WebHookGitHubToken,
 		c.WebHookGitHubTokenUser,
 		c.WebHookGitHubSecret,
-		c.WebHookGitHubToken, c.LockPath)
+		c.WebHookGitHubToken, c.LockPath, c.TaskDeadline, c.NodeDeadline, c.HealthCheckInterval)
 
 	return ans
 }
@@ -446,9 +472,14 @@ func (c *DatabaseConfig) String() string {
 db:
   engine: %s
   db_path: %s
+  db_endpoints: %s
+  db_name: %s
+  db_password: ****
+  db_certpath: %s
+  db_keypath: %s
+  db_user: %s
 `,
-		c.DBEngine, c.DBPath)
-
+		c.DBEngine, c.DBPath, c.Endpoints, c.DatabaseName, c.CertPath, c.KeyPath, c.User)
 	return ans
 }
 
@@ -528,7 +559,6 @@ agent:
   health_check_clean_path: %s
 
   pre_task_hook_exec: %s
-
 `, c.SecretKey, c.BuildPath,
 		c.AgentConcurrency, c.AgentKey, c.ApiKey,
 		c.PrivateQueue, c.StandAlone, c.DownloadRateLimit,
@@ -552,9 +582,10 @@ general:
   loglevel: %s
   tls_cert: %s
   tls_key: ***********************
+  client_timeout: %d
 `,
 		c.Debug, c.LogFile, c.LogLevel,
-		c.TLSCert)
+		c.TLSCert, c.ClientTimeout)
 
 	return ans
 }
@@ -574,12 +605,15 @@ configfile: %s
 %s
 
 %s
+
+%s
 `,
 		c.Viper.Get("config"),
 		c.Web.String(),
 		c.Broker.String(),
 		c.Storage.String(),
 		c.Agent.String(),
+		c.Database.String(),
 		c.General.String())
 
 	return ans

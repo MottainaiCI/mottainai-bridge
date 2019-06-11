@@ -54,18 +54,22 @@
 
 [[projects]]
   branch = "master"
-  digest = "1:613b87866f754fd9620ec051a1ee648943f89e864b83d823e3392153d17c9d3f"
+  digest = "1:3ceab48115ac4413941ec0b17ac9961a9cc42d4fdde46a06dc77865b2b9f176e"
   name = "github.com/MottainaiCI/mottainai-server"
   packages = [
     "pkg/client",
+    "pkg/event",
     "pkg/namespace",
+    "pkg/secret",
     "pkg/settings",
     "pkg/storage",
     "pkg/tasks",
     "pkg/utils",
+    "routes/schema",
+    "routes/schema/v1",
   ]
   pruneopts = "UT"
-  revision = "05c276b6aa14e1862818c4c4c3fc83175fd47ea5"
+  revision = "479e3f3cd102ab5843f5ad6befb9f97fcaa1e87b"
 
 [[projects]]
   branch = "master"
@@ -129,6 +133,14 @@
   packages = ["."]
   pruneopts = "UT"
   revision = "54b27db64c180751e7049321a2e109ff220ccdcc"
+
+[[projects]]
+  digest = "1:b67d9fb93495f20c1650448395a35d8c8a05cc1744bdd9986f5bc69d5d114f22"
+  name = "github.com/Unknwon/com"
+  packages = ["."]
+  pruneopts = "UT"
+  revision = "41959bdd855fb7db467f78865d5f9044507df1cd"
+  version = "v2"
 
 [[projects]]
   digest = "1:f1882193426979644a8f1290df379c414f7f7584720235d3db4580e1c1290f4c"
@@ -329,6 +341,14 @@
   version = "v1.38.1"
 
 [[projects]]
+  branch = "master"
+  digest = "1:bdb17865b13e720add16eaa212872b4306c8521f367c7a7ff2c10cef1e7afdb1"
+  name = "github.com/go-macaron/inject"
+  packages = ["."]
+  pruneopts = "UT"
+  revision = "d8a0b8677191f4380287cfebd08e462217bac7ad"
+
+[[projects]]
   digest = "1:586ea76dbd0374d6fb649a91d70d652b7fe0ccffb8910a77468e7702e7901f3d"
   name = "github.com/go-stack/stack"
   packages = ["."]
@@ -505,6 +525,14 @@
   revision = "d5e5a8405ef9633c84af42fbcc734ec8dd73c198"
 
 [[projects]]
+  digest = "1:e67535e91447a130af9c055bcd01974536ce860187b766c3d15c78416c6772f1"
+  name = "github.com/juju/schema"
+  packages = ["."]
+  pruneopts = "UT"
+  revision = "29562ba24201043ee1dd1ef422ff1d16fc1cf29d"
+  version = "v1.0.0"
+
+[[projects]]
   branch = "master"
   digest = "1:4b100fcfff4c16b8cccada24d19da4826c7d36f2b6065df146eeeffc3ae7a853"
   name = "github.com/juju/webbrowser"
@@ -545,8 +573,7 @@
   revision = "8b5a689ed69b1c7cd1e3595276fc2a352d7818e0"
 
 [[projects]]
-  branch = "master"
-  digest = "1:12e36d0d371af4c3a824fcf70c72a9a06a47dc92a181f177c5bc60005939d9df"
+  digest = "1:8a6671d3e63b5e16d14d9263cb6dbb7f02eabb801a1902dc96d95f47f5f015dd"
   name = "github.com/lxc/lxd"
   packages = [
     "client",
@@ -563,7 +590,8 @@
     "shared/termios",
   ]
   pruneopts = "UT"
-  revision = "6556fcb5743f6fee556583c6d01f30b90a78792f"
+  revision = "f51c28a3744372324480a92076dcaebf2d71ccac"
+  version = "lxd-3.12"
 
 [[projects]]
   digest = "1:c568d7727aa262c32bdf8a3f7db83614f7af0ed661474b24588de635c20024c7"
@@ -1103,13 +1131,41 @@
   version = "v1.1.3"
 
 [[projects]]
-  digest = "1:c444bfd08694c60973915ba5f0995b682152f235c8ba7acc59b54ef2759f25ee"
+  digest = "1:d37c61a335d13bc49b3f90e9e13c8686e4548839b69c58549e727afb2245c454"
+  name = "gopkg.in/ini.v1"
+  packages = ["."]
+  pruneopts = "UT"
+  revision = "c85607071cf08ca1adaf48319cd1aa322e81d8c1"
+  version = "v1.42.0"
+
+[[projects]]
+  digest = "1:fcd8985b8b48658cec56adc8b496903729c01ae0510f6daebee2b00e17dead98"
+  name = "gopkg.in/juju/environschema.v1"
+  packages = [
+    ".",
+    "form",
+  ]
+  pruneopts = "UT"
+  revision = "d79e96fb1039e808c217847f4c45cce48e6ff2a5"
+  version = "v1.0.0"
+
+[[projects]]
+  digest = "1:3d43a1d68f315a1c4c2cd20ee4d35c96695f17637502366341ac43b7813ea95f"
+  name = "gopkg.in/macaron.v1"
+  packages = ["."]
+  pruneopts = "UT"
+  revision = "dfcb80ca86e8534962c62812efd93209c7e600e7"
+  version = "v1.3.2"
+
+[[projects]]
+  digest = "1:83590f2a0c660cfff66876d6adf373e162e4063c19e7f4cace1cdb9f1eba6050"
   name = "gopkg.in/macaroon-bakery.v2"
   packages = [
     "bakery",
     "bakery/checkers",
     "bakery/internal/macaroonpb",
     "httpbakery",
+    "httpbakery/form",
     "internal/httputil",
   ]
   pruneopts = "UT"
@@ -1228,6 +1284,8 @@
     "github.com/MottainaiCI/mottainai-server/pkg/settings",
     "github.com/MottainaiCI/mottainai-server/pkg/tasks",
     "github.com/MottainaiCI/mottainai-server/pkg/utils",
+    "github.com/MottainaiCI/mottainai-server/routes/schema",
+    "github.com/MottainaiCI/mottainai-server/routes/schema/v1",
     "github.com/go-test/deep",
     "github.com/mudler/anagent",
     "github.com/spf13/cobra",

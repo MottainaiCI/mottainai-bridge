@@ -29,10 +29,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"strconv"
+	"time"
 
-	setting "github.com/MottainaiCI/mottainai-server/pkg/settings"
-	//"github.com/MottainaiCI/mottainai-server/pkg/utils"
 	"container/list"
+	setting "github.com/MottainaiCI/mottainai-server/pkg/settings"
 	"io"
 	"io/ioutil"
 	"os"
@@ -144,7 +145,6 @@ func (l *LxdExecutor) Setup(docID string) error {
 func (l *LxdExecutor) Play(docId string) (int, error) {
 
 	var cachedImage bool = false
-	var foundCachedImage bool = false
 	var imageFingerprint, containerName string
 	var err error
 
@@ -157,7 +157,6 @@ func (l *LxdExecutor) Play(docId string) (int, error) {
 		return 1, err
 	}
 
-	// TODO: Handle cache image
 	if len(task_info.Image) > 0 {
 
 		// NOTE: If cache image is enable and cache clean is disable then i
@@ -173,7 +172,6 @@ func (l *LxdExecutor) Play(docId string) (int, error) {
 
 				if imageFingerprint, _, _, _ = l.FindImage(sharedName); imageFingerprint != "" {
 					l.Report("Cached image found: " + imageFingerprint + " " + sharedName)
-					foundCachedImage = true
 					if imageFingerprint, err = l.PullImage(imageFingerprint); err != nil {
 						return 1, err
 					}
@@ -224,41 +222,21 @@ func (l *LxdExecutor) Play(docId string) (int, error) {
 	defer l.CleanUpContainer(containerName, &task_info)
 
 	// Push workdir to container
-	var localWorkDir, targetWorkDir, targetArtefactDir, targetStorageDir string
+	var localWorkDir, targetWorkDir, targetArtefactDir, targetStorageDir, targetHomeDir string
 
-	targetWorkDir = "/mottainai/build"
-	// TODO: Handle path with / correctly
-	targetArtefactDir = targetWorkDir + "/" + artefact_path
-	targetStorageDir = targetWorkDir + "/" + storage_path
+	// Inside container I use the same path configured on agent with task id
+	targetWorkDir = l.Context.RootTaskDir
+	targetHomeDir = strings.TrimRight(l.Context.ContainerPath(""), "/") + "/"
+	targetArtefactDir = l.Context.ContainerPath(artefact_path)
+	targetStorageDir = l.Context.ContainerPath(storage_path)
 
 	if len(l.Context.SourceDir) > 0 {
-		if len(task_info.Directory) > 0 {
-			// TODO: Handle / if not present and unclean path
-			// NOTE: Last / it's needed to avoid to drop last directory on push directory
-			localWorkDir = l.Context.SourceDir + task_info.Directory + "/"
-		} else {
-			localWorkDir = l.Context.SourceDir + "/"
-		}
+		// NOTE: Last / it's needed to avoid to drop last directory on push directory
+		localWorkDir = strings.TrimRight(l.Context.SourceDir, "/") + "/"
 	} else {
 		// NOTE: I use BuildDir to avoid execution of low level mkdir command
 		//       on container. We can replase this with a mkdir to target
-		localWorkDir = l.Context.BuildDir
-	}
-
-	if foundCachedImage {
-		l.Report("Try to clean artefacts and storage directories from container created by cached image...")
-		// Delete old directories of storage and artefacts
-		err = l.DeleteContainerDirRecursive(containerName, targetArtefactDir)
-		if err != nil {
-			l.Report("WARNING: Error on clean artefacts dir on cached container: " + err.Error())
-			// Ignore error. I'm not sure that is the right thing.
-		}
-
-		err = l.DeleteContainerDirRecursive(containerName, targetStorageDir)
-		if err != nil {
-			l.Report("WARNING: Error on clean storage dir on cached container: " + err.Error())
-			// Ignore error. I'm not sure that is the right thing.
-		}
+		localWorkDir = strings.TrimRight(l.Context.BuildDir, "/") + "/"
 	}
 
 	// Create workdir on container
@@ -267,20 +245,27 @@ func (l *LxdExecutor) Play(docId string) (int, error) {
 		return 1, err
 	}
 	// Create artefactdir on container
-	err = l.RecursivePushFile(containerName, l.Context.ArtefactDir, targetArtefactDir)
+	err = l.RecursivePushFile(containerName,
+		strings.TrimRight(l.Context.ArtefactDir, "/")+"/", targetArtefactDir)
 	if err != nil {
 		return 1, err
 	}
 	// Create storagedir on container
-	err = l.RecursivePushFile(containerName, l.Context.StorageDir, targetStorageDir)
+	err = l.RecursivePushFile(containerName,
+		strings.TrimRight(l.Context.StorageDir, "/")+"/", targetStorageDir)
 	if err != nil {
 		return 1, err
 	}
 
 	// Execute command
 	var res int
-	res, err = l.ExecCommand(containerName, execute_script, targetWorkDir, &task_info)
+	res, err = l.ExecCommand(containerName, execute_script, targetHomeDir, &task_info)
 	if err != nil || res != 0 {
+		if err != nil {
+			l.Report("Error on exec command: " + err.Error())
+		} else {
+			l.Report(fmt.Sprintf("Execution failed: %d", res))
+		}
 		return 1, err
 	}
 
@@ -304,9 +289,25 @@ func (l *LxdExecutor) Play(docId string) (int, error) {
 
 	if len(task_info.CacheImage) > 0 {
 
+		l.Report("Try to clean artefacts and storage directories from container before create cached image...")
+
+		// Delete old directories of storage and artefacts
+		err = l.DeleteContainerDirRecursive(containerName, targetArtefactDir)
+		if err != nil {
+			l.Report("WARNING: Error on clean artefacts dir on container: " + err.Error())
+			// Ignore error. I'm not sure that is the right thing.
+		}
+
+		err = l.DeleteContainerDirRecursive(containerName, targetStorageDir)
+		if err != nil {
+			l.Report("WARNING: Error on clean storage dir on container: " + err.Error())
+			// Ignore error. I'm not sure that is the right thing.
+		}
+
 		// Stop container for create image.
 		err = l.DoAction2Container(containerName, "stop")
 		if err != nil {
+			l.Report("Error on stop container: " + err.Error())
 			return 1, err
 		}
 
@@ -455,7 +456,7 @@ func (l *LxdExecutor) CommitImage(containerName, aliasName string, task *Task) (
 		return "", err
 	}
 
-	err = l.CurrentLocalOperation.Wait()
+	err = l.waitOperation(nil, nil)
 	if err != nil {
 		return "", err
 	}
@@ -493,6 +494,7 @@ func (l *LxdExecutor) CleanUpContainer(containerName string, task *Task) error {
 
 	err = l.DoAction2Container(containerName, "stop")
 	if err != nil {
+		l.Report("Error on stop container: " + err.Error())
 		return err
 	}
 
@@ -500,6 +502,7 @@ func (l *LxdExecutor) CleanUpContainer(containerName string, task *Task) error {
 		// Delete container
 		l.CurrentLocalOperation, err = l.LxdClient.DeleteContainer(containerName)
 		if err != nil {
+			l.Report("Error on delete container: " + err.Error())
 			return err
 		}
 	}
@@ -567,7 +570,7 @@ func (l *LxdExecutor) LaunchContainer(name, fingerprint string, cachedImage bool
 		return err
 	}
 
-	err = lxd_utils.CancelableWait(l.RemoteOperation, &progress)
+	err = l.waitOperation(nil, &progress)
 	if err != nil {
 		progress.Done("")
 		return err
@@ -638,7 +641,7 @@ func (l *LxdExecutor) DoAction2Container(name, action string) error {
 		return err
 	}
 
-	err = l.CurrentLocalOperation.Wait()
+	err = l.waitOperation(nil, &progress)
 	progress.Done("")
 	if err != nil {
 		l.CurrentLocalOperation = nil
@@ -801,7 +804,7 @@ func (l *LxdExecutor) CopyImage(imageFingerprint string, remote lxd.ImageServer,
 		return err
 	}
 
-	err = lxd_utils.CancelableWait(l.RemoteOperation, &progress)
+	err = l.waitOperation(nil, &progress)
 	progress.Done("")
 	l.RemoteOperation = nil
 	if err != nil {
@@ -1071,6 +1074,7 @@ func (l *LxdExecutor) RecursivePullFile(nameContainer string, destPath string, l
 		if err != nil {
 			return err
 		}
+
 		defer f.Close()
 
 		err = os.Chmod(target, os.FileMode(resp.Mode))
@@ -1164,7 +1168,8 @@ func (l *LxdExecutor) ExecCommand(nameContainer, command, workdir string, task *
 			"======================================================\n",
 		apiCommand, command))
 
-	apiCommand = append(apiCommand, command)
+	// Align logic done on docker task
+	apiCommand = append(apiCommand, "pwd && ls -liah && "+command)
 
 	// Prepare the command
 	req := lxd_api.ContainerExecPost{
@@ -1183,18 +1188,22 @@ func (l *LxdExecutor) ExecCommand(nameContainer, command, workdir string, task *
 		DataDone: make(chan bool),
 	}
 
+	var err error
 	// Run the command in the container
-	op, err := l.LxdClient.ExecContainer(nameContainer, req, &execArgs)
+	l.CurrentLocalOperation, err = l.LxdClient.ExecContainer(nameContainer, req, &execArgs)
 	if err != nil {
+		l.Report("Error on exec command: " + err.Error())
 		return 1, err
 	}
 
 	// Wait for the operation to complete
-	err = op.Wait()
+	err = l.waitOperation(nil, nil)
 	if err != nil {
+		l.Report("Erro on waiting execution of commands: " + err.Error())
 		return 1, err
 	}
-	opAPI := op.Get()
+	opAPI := l.CurrentLocalOperation.Get()
+	l.CurrentLocalOperation = nil
 
 	// Wait for any remaining I/O to be flushed
 	<-execArgs.DataDone
@@ -1277,4 +1286,48 @@ func (l *LxdExecutor) GetContainerName(task *Task) string {
 	}
 
 	return ans
+}
+
+func (l *LxdExecutor) waitOperation(rawOp interface{}, p *lxd_utils.ProgressRenderer) error {
+
+	var op interface{} = rawOp
+	var err error = nil
+
+	// NOTE: currently on ARM we have a weird behavior where the process that waits
+	//       for LXD operation often remain blocked. It seems related to a concurrency
+	//       problem on initializing Golang channel.
+	//       As a workaround, I sleep some seconds before waiting for a response.
+
+	// Retrieve value of sleep before waiting execution of the operation.
+	sec, okType := l.Config.GetAgent().LxdCacheRegistry["wait_sleep"]
+	if !okType || sec == "" {
+		// By default I wait for 1 seconds.
+		time.Sleep(1000 * time.Millisecond)
+	} else if i, e := strconv.Atoi(sec); e == nil && i > 0 {
+		duration, err := time.ParseDuration(fmt.Sprintf("%ds", i))
+		if err == nil {
+			time.Sleep(duration)
+		}
+	}
+
+	// TODO: Verify if could be a valid idea permit to use wait not cancelable.
+	// err = op.Wait()
+
+	if rawOp == nil {
+		if l.CurrentLocalOperation != nil {
+			op = l.CurrentLocalOperation
+		} else if l.RemoteOperation != nil {
+			op = l.RemoteOperation
+		} else {
+			l.Report("WARN: No operations found.")
+		}
+	}
+
+	if p != nil {
+		err = lxd_utils.CancelableWait(op, p)
+	} else {
+		err = lxd_utils.CancelableWait(op, nil)
+	}
+
+	return err
 }

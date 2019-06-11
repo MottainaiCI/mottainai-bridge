@@ -1008,6 +1008,31 @@ func EscapePathFstab(path string) string {
 	return r.Replace(path)
 }
 
+func SetProgressMetadata(metadata map[string]interface{}, stage, displayPrefix string, percent, processed, speed int64) {
+	progress := make(map[string]string)
+	// stage, percent, speed sent for API callers.
+	progress["stage"] = stage
+	if processed > 0 {
+		progress["processed"] = strconv.FormatInt(processed, 10)
+	}
+
+	if percent > 0 {
+		progress["percent"] = strconv.FormatInt(percent, 10)
+	}
+
+	progress["speed"] = strconv.FormatInt(speed, 10)
+	metadata["progress"] = progress
+
+	// <stage>_progress with formatted text sent for lxc cli.
+	if percent > 0 {
+		metadata[stage+"_progress"] = fmt.Sprintf("%s: %d%% (%s/s)", displayPrefix, percent, GetByteSizeString(speed, 2))
+	} else if processed > 0 {
+		metadata[stage+"_progress"] = fmt.Sprintf("%s: %s (%s/s)", displayPrefix, GetByteSizeString(processed, 2), GetByteSizeString(speed, 2))
+	} else {
+		metadata[stage+"_progress"] = fmt.Sprintf("%s: %s/s", displayPrefix, GetByteSizeString(speed, 2))
+	}
+}
+
 func DownloadFileHash(httpClient *http.Client, useragent string, progress func(progress ioprogress.ProgressData), canceler *cancel.Canceler, filename string, url string, hash string, hashFunc hash.Hash, target io.WriteSeeker) (int64, error) {
 	// Always seek to the beginning
 	target.Seek(0, 0)
@@ -1075,12 +1100,19 @@ func DownloadFileHash(httpClient *http.Client, useragent string, progress func(p
 }
 
 func ParseNumberFromFile(file string) (int64, error) {
-	buf, err := ioutil.ReadFile(file)
+	f, err := os.Open(file)
+	if err != nil {
+		return int64(0), err
+	}
+	defer f.Close()
+
+	buf := make([]byte, 4096)
+	n, err := f.Read(buf)
 	if err != nil {
 		return int64(0), err
 	}
 
-	str := strings.TrimSpace(string(buf))
+	str := strings.TrimSpace(string(buf[0:n]))
 	nr, err := strconv.Atoi(str)
 	if err != nil {
 		return int64(0), err
@@ -1126,4 +1158,53 @@ func RenderTemplate(template string, ctx pongo2.Context) (string, error) {
 	}
 
 	return ret, err
+}
+
+func GetSnapshotExpiry(refDate time.Time, s string) (time.Time, error) {
+	expr := strings.TrimSpace(s)
+
+	if expr == "" {
+		return time.Time{}, nil
+	}
+
+	re := regexp.MustCompile(`^(\d+)(M|H|d|w|m|y)$`)
+	expiry := map[string]int{
+		"M": 0,
+		"H": 0,
+		"d": 0,
+		"w": 0,
+		"m": 0,
+		"y": 0,
+	}
+
+	values := strings.Split(expr, " ")
+
+	if len(values) == 0 {
+		return time.Time{}, nil
+	}
+
+	for _, value := range values {
+		fields := re.FindStringSubmatch(value)
+		if fields == nil {
+			return time.Time{}, fmt.Errorf("Invalid expiry expression")
+		}
+
+		if expiry[fields[2]] > 0 {
+			// We don't allow fields to be set multiple times
+			return time.Time{}, fmt.Errorf("Invalid expiry expression")
+		}
+
+		val, err := strconv.Atoi(fields[1])
+		if err != nil {
+			return time.Time{}, err
+		}
+
+		expiry[fields[2]] = val
+
+	}
+
+	t := refDate.AddDate(expiry["y"], expiry["m"], expiry["d"]+expiry["w"]*7).Add(
+		time.Hour*time.Duration(expiry["H"]) + time.Minute*time.Duration(expiry["M"]))
+
+	return t, nil
 }
